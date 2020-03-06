@@ -1,0 +1,776 @@
+---
+title: "EDA of SMUD Data for DUE-S Project"
+author: "Ben Choi"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dpi=150)
+```
+
+```{r message = FALSE}
+library(corrplot)
+library(ggbiplot)
+library(knitr)
+library(lubridate)
+library(ggridges)
+library(leaps)
+library(e1071)
+library(tidyverse)
+
+# SMUD CSV File Paths
+
+assessor_data <- 'D:/SMUD/Assessor_Data.csv'
+ee_prog_ind <- 'D:/SMUD/EE_Program_indicators.csv'
+energy_ami <- 'D:/SMUD/Energy_AMI.csv'
+service_addr <- 'D:/SMUD/Service_Addresses.csv'
+
+# Project File Paths
+
+building_energy_rds <- here::here("data/building_energy.rds")
+
+set.seed(5)
+```
+
+# Data
+
+## Wrangling
+
+Note that all of the code in the following chunk will eventually be transferred to a separate data read/processing script with an associated Makefile. The code for data wrangling is kept here to be transparent about how the data is manipulated and stored before use.
+
+```{r eval=FALSE}
+buildings <- 
+  read_csv(assessor_data) %>%
+  transmute(
+    apn = APN,
+    id = row_number(),
+    year_built = as.integer(`ns1:YEAR_BUILT`),
+    num_stories = as.integer(`ns1:NUMBER_OF_STORIES`),
+    ground_floor = as.integer(`ns1:GROUND_FLOOR_GROSS`),
+    net_rental = as.integer(`ns1:NET_RENTAL`),
+    owner = as.character(`ns1:OWNER`),
+    street_number = as.character(`ns1:STREET_NUMBER`),
+    street_name = as.character(`ns1:STREET_NAME`),
+    street_suffix = as.character(`ns1:STREET_SUFFIX`)
+  ) %>% 
+  unite(col = "street", starts_with("street_"), sep = " ")
+
+energy <- 
+  read_csv(energy_ami) %>% 
+  pivot_longer(
+    cols = starts_with('kwh_'),
+    names_to = "hour",
+    names_pattern = "kwh_?(.*)",
+    values_to = "kwh"
+  ) %>% 
+  transmute(
+    apn = APN,
+    date_time = str_c(Date, "/", hour) %>% parse_date_time("%m/%d/%Y/%H"),
+    year = year(date_time),
+    month = month(date_time),
+    day = day(date_time),
+    hour = hour(date_time),
+    freq = as.integer(`_FREQ_`),
+    kwh = as.integer(kwh)
+  )
+
+building_energy <- 
+  buildings %>% 
+  left_join(energy, by = "apn") %>% 
+  select(id, apn, date_time, kwh, everything()) %>% 
+  write_rds(building_energy_rds)
+```
+
+## Checking Data for Issues
+
+```{r}
+building_energy <- 
+  read_rds(building_energy_rds)
+```
+
+Here's a random sample of 5 rows from the data so you know what it looks like now.
+
+```{r}
+building_energy %>% 
+  sample_n(5) %>% 
+  kable()
+```
+
+To avoid cluttering with long `apn` values, from now on we'll use `id` to refer to buildings referenced by the corresponding `apn` as shown below.
+
+```{r}
+building_energy %>% 
+  distinct(apn, id) %>% 
+  glimpse()
+```
+
+We also run a summary on all the variables to get a sense of their rough distribution and if we need to worry about missing or erroneous values.
+
+```{r}
+building_energy %>% 
+  summary()
+
+building_energy %>% 
+  summarize_all(~ sum(is.na(.))) %>% 
+  glimpse()
+```
+
+Some potential data issues from the summary above:
+
+* Number of stories can equal zero. It's unclear what this means at this point.
+* All 64 NA's are in `kwh`.
+* `net_rental` is apparently 1 for at least one building. If this variable refers to monthly rental cost, this could reflect erroneously recorded data.
+
+```{r}
+building_energy %>% 
+  distinct(net_rental) %>% 
+  arrange(net_rental)
+
+building_energy %>% 
+  count(id, num_stories) %>% 
+  count(num_stories) %>% 
+  arrange(num_stories)
+```
+
+* It looks like there are 6 buildings with "0 stories", the second most common number of stories to have. This probably means that this is an interpretation issue (e.g. 0 stories means single-floor?).
+* The value of `net_rental` equal to 1 is probably an error given that only one building has this value and it seems to differ greatly from the other values.
+
+We also find the per-building temporal range as follows.
+
+```{r}
+building_energy %>% 
+  group_by(id) %>% 
+  summarize(min = min(date_time), max = max(date_time)) %>% 
+  arrange(desc(min), max, id)
+```
+    
+It looks like the data covers an identical range (2016-01-01 to 2019-01-01) for all buildings except #16, which starts on 2017-05-18. This makes sense, given that this building was constructed in 2017. We find missing values as follows.
+
+```{r fig.width=10}
+building_energy %>% 
+  filter(is.na(kwh)) %>% 
+  group_by(id) %>% 
+  summarize(year_built = mean(year_built), num_na = n()) %>% 
+  arrange(desc(num_na)) %>% 
+  kable(caption = "Number of NA's per building")
+
+building_energy %>% 
+  filter(id == 16, year == 2017) %>% 
+  group_by(
+    month, 
+    day,
+  ) %>% 
+  summarize(sum_na = sum(is.na(kwh))) %>% 
+  ungroup() %>% 
+  ggplot(aes(as.factor(day), fct_rev(as.factor(month)), alpha = sum_na)) +
+  geom_tile() +
+  labs(
+    title = "Distribution of NA's in Building 16 in 2017",
+    subtitle = 
+      "All missing values for this building fall on the first two days of recorded data",
+    x = "Day",
+    y = "Month",
+    alpha = "# NA"
+  ) +
+  annotate("text", x = 15.7, y = 8.1, label = "Data Starts ->")
+```
+
+For most buildings, it's unclear where the missing values come from, although for 16, it seems like the bulk of its missing data occurs at the very start of data recording. It's possible that this is due to delays or malfunctions as metering infrastructure was setup or initialized for the building.
+
+# Exploratory Data Analysis
+
+Now that we've wrangled and checked our data for issues, we can begin to explore and visualize the data. We begin by exploring more general, seasonal trends in energy usage.
+
+```{r}
+building_energy %>% 
+  mutate(month = lubridate::month(date_time, label = TRUE)) %>%
+  group_by(month, hour, id) %>% 
+  summarize(mean_kwh_building = mean(kwh, na.rm = TRUE)) %>% 
+  summarize(mean_kwh = mean(mean_kwh_building, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(hour, fct_rev(month), fill = mean_kwh)) +
+  geom_tile() +
+  scale_x_continuous(expand = expand_scale()) +
+  scale_y_discrete(expand = expand_scale()) +
+  scale_fill_distiller(palette = "RdYlBu") +
+  labs(
+    title = "Hourly energy usage distribution per month",
+    subtitle = "Distribution relatively consistent unlike magnitude",
+    x = "Hour",
+    y = "Month",
+    fill = "Mean \nenergy \nusage \n(kWh)",
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+```
+
+We see that peak energy usage occurs around 14:00 year-round, with a slight left-skew (i.e. longer tail in the left/morning hours).
+
+```{r fig.width = 8, fig.height = 8}
+building_energy %>% 
+  mutate(month = lubridate::month(date_time, label = TRUE)) %>% 
+  group_by(month, day, id) %>% 
+  summarize(mean_kwh_building = mean(kwh, na.rm = TRUE)) %>% 
+  summarize(mean_kwh = mean(mean_kwh_building, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = mean_kwh, y = fct_rev(month), fill = stat(x))) +
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_distiller(palette = "RdYlBu") +
+  labs(
+    title = "Density of daily means of hourly energy usage across all buildings (1/2016 - 12/2018)",
+    subtitle = "Seasonal shifts in energy usage apparent",
+    x = "Mean kWh",
+    y = "Month",
+    fill = "kWh",
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+```
+
+It looks like all buildings generally seem to have greater energy usage in the summer compared to winter months. The spread of energy use also seems to generally increase in the summer, while in the winter buildings seem to use similarly low amounts of energy.
+
+We also look at the 1-D distribution of building energy usage (per hour) means. It's clear that certain buildings have significantly more hourly energy usage (averaged over all days from all years) than others. 
+
+```{r}
+building_summary <- 
+  building_energy %>% 
+  group_by(id, hour) %>% 
+  summarize(kwh_hourly_mean = mean(kwh, na.rm = TRUE)) %>% 
+  group_by(id) %>%
+  summarize(
+    building_mean = mean(kwh_hourly_mean, na.rm = TRUE),
+    building_max = max(kwh_hourly_mean, na.rm = TRUE),
+    building_min = min(kwh_hourly_mean, na.rm = TRUE),
+    building_range = building_max - building_min,
+  )
+
+building_summary %>% 
+  ggplot() +
+  geom_histogram(aes(building_mean), binwidth = 20)
+```
+
+It seems that lower energy buildings tend to gravitate towards specific values while higher energy buildings vary a lot. We arbitrarily split buildings into low and high energy based on the mean of the hourly distribution on an average day with a threshold of 200 kWh. We also allow the y-scale to fluctuate to highlight daily patterns rather than exact values.
+
+```{r, fig.width=10, fig.height=10}
+building_energy %>% 
+  group_by(id, hour) %>% 
+  summarize(kwh_hourly_mean = mean(kwh, na.rm = TRUE)) %>%
+  group_by(id) %>% 
+  mutate(low_energy = as.logical(mean(kwh_hourly_mean) < 200)) %>% 
+  ggplot(aes(hour, kwh_hourly_mean, color = low_energy)) +
+  geom_line() +
+  scale_color_discrete(
+    name = "Energy Category",
+    labels = c("High Energy", "Low Energy")
+  ) +
+  scale_x_continuous(breaks = c(1, 12, 24)) +
+  scale_y_continuous() +
+  facet_wrap(~ id, scales = "free_y", nrow = 8) +
+  theme(
+    legend.position = "top"
+  ) +
+  labs(
+    title = "Mean distribution of hourly energy usage in each building",
+    subtitle = "Free y-scale conveys distribution more clearly",
+    x = "Hour",
+    y = "Energy usage (kWh)",
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+```
+
+This is more reasonable, but the threshold had to manually be set to group these energy consumption patterns into groups. Later, we'll explore strategies to characterize and group energy consumption patterns automatically. Looking at the plot above, we can see that most of these building energy profiles appear pretty consistent, with the exception of 5, 13, 19, 22, and 32. 
+
+```{r}
+exceptions <- 
+  c(5L, 13L, 19L, 22L, 32L)
+
+building_energy %>% 
+  filter(id %in% exceptions) %>% 
+  distinct(apn, id, owner, street) %>% 
+  kable()
+```
+
+* It's possible to hypothesize about the underlying reason for these discrepancies. For example, 13 is an apartment building (based on Google Maps), and shows a relatively modest amount of energy use, throughout the day, with a sharp peak in the evening. This may be attributed to the typical daily work cycle, in which most apartment dwellers are away from their residence (and thus using less energy on average) in the day and return in the evening. Further, the "inverted" pattern in building 19, a parking garage, may be attributed to using ambient light in the day time and artificial lighting at night time, a practice commonly found in most parking garages.
+* It's also worth noting that most of these buildings (with the exception of the apartment complex) are considered "low energy" (mean energy usage < 200 kWh). It's possible that the distribution of energy usage in higher energy buildings is "smoothed" by simply having more people using the buildings, or by being more consistently regulated by automated energy control systems.
+* The main takeaway here is that more building metadata is always useful! It may be possible to better understand energy consumption patterns just by examining each building's purpose (e.g. restaurant, office, apartment complex, etc.).
+
+We now quickly examine some basic two-dimensional relationships to begin to understand potential predictors/influences on building energy use.
+
+```{r}
+plot_df_group <- function(df, x, y, group, func, ...) {
+  df %>%
+    group_by({{group}}) %>%
+    summarize_at(vars({{x}}, {{y}}), func, ...) %>%
+    ggplot(aes({{x}}, {{y}})) +
+    geom_point()
+} 
+
+building_energy %>% 
+  plot_df_group(net_rental, kwh, id, mean, na.rm = TRUE) +
+  geom_smooth()
+
+building_energy %>% 
+  plot_df_group(ground_floor, kwh, id, mean, na.rm = TRUE)
+
+building_energy %>% 
+  plot_df_group(num_stories, kwh, id, mean, na.rm = TRUE) +
+  geom_smooth()
+
+building_energy %>% 
+  plot_df_group(num_stories, ground_floor, id, mean, na.rm = TRUE)
+```
+
+We generally see increases in energy use as the rent, square footage, and number of stories goes up. We also see an example of correlated variables, where buildings with more stories tend to have greater square footage. It's a good idea to be aware of potentially correlated variables, especially when modeling, which we cover below.
+
+# Modeling
+
+## Linear Model
+
+We begin by attempting to fit a linear model (with linear terms) using all relevant numeric variables (e.g. ground floor, etc.). We scale and center each variable such that we can compare the magnitudes of fitted coefficients as proxies for their relative importance as predictors of building energy, as shown.
+
+```{r}
+fit <- 
+  lm(
+    kwh ~ .,
+    data = 
+      building_energy %>% 
+      drop_na(kwh) %>% 
+      transmute_if(is.numeric, scale) %>% 
+      select(-id, -freq)
+  )
+
+fit$coefficients %>% 
+  tibble(
+    names = names(.), 
+    coef = .
+  ) %>% 
+  mutate(names = fct_reorder(names, desc(abs(coef)))) %>% 
+  ggplot(aes(names, coef)) +
+  geom_col() +
+  labs(
+    title = "Linear Regression Coefficients for All Building Energy Usage",
+    subtitle = "All variables scaled to zero mean and standard deviation one",
+    x = "Coefficient",
+    y = "Value"
+  )
+```
+
+The coefficient magnitudes suggest that temporal variables matter little in prediction of hourly energy usage. Rather, building characteristics seem to play a much larger role, suggesting that the linear model is simply predicting magnitude rather than actual variation. We can confirm this by looking at residual plots, as we do below.
+
+However, looking at a plot of the sum of residuals for each hour (sum per building), we can see that there are clear trends, with the largest residuals systematically occuring around noon. This is perhaps expected, especially given that we know that hourly energy usage trends are not linear, so could not accurately be modeled with entirely single degree terms.
+
+```{r}
+building_energy %>% 
+  drop_na(kwh) %>% 
+  mutate(resid = fit$residuals) %>% 
+  count(id, hour, wt = resid) %>% 
+  ggplot(aes(hour, n, group = hour)) +
+  geom_hline(aes(yintercept = 0), color = "red", size = 1) +
+  geom_boxplot(alpha = 0.5) +
+  labs(
+    title = "Residuals by hour and building from fitted linear model",
+    subtitle = "Linear model clearly not appropriate",
+    x = "Hour",
+    y = "Sum of Residuals per Building"
+  )
+```
+
+We can see that when predicting energy usage, building characteristics dominate over temporal variables. This result is not particularly surprising, as differences in energy usage magnitude between buildings likely far outweighs any temporal fluctuations. We attempt to mitigate this by scaling each buildings energy usage to mean 0 and standard deviation 1 (within each building instead of across all buildings). We also introduce quadratic terms for month and hour to attempt to capture the rising/falling trends in energy use we have seen previously. Finally, we
+
+```{r}
+building_scaled <- 
+  building_energy %>% 
+  drop_na(kwh) %>% 
+  group_by(id) %>% 
+  mutate(kwh = scale(kwh)) %>% 
+  ungroup() %>%
+  transmute_if(is.numeric, scale) %>% 
+  select(-id, -freq)
+
+scaled_kwh_fit <- 
+  lm(
+    kwh ~ poly(hour, 2) + poly(month, 2) + year_built + net_rental + num_stories + ground_floor + year + day,
+    data = building_scaled
+  )
+
+scaled_kwh_fit$coefficients %>% 
+  tibble(
+    names = names(.), 
+    coef = .
+  ) %>% 
+  mutate(names = fct_reorder(names, desc(abs(coef)))) %>% 
+  ggplot(aes(names, coef)) +
+  geom_col() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Linear Regression Coefficients for All Building Energy Usage",
+    subtitle = "All variables standardized to zero mean and standard deviation",
+    x = "Coefficient",
+    y = "Value"
+  )
+
+building_energy %>% 
+  drop_na(kwh) %>% 
+  mutate(resid = scaled_kwh_fit$residuals) %>% 
+  count(id, hour, wt = resid) %>% 
+  ggplot(aes(hour, n, group = hour)) +
+  geom_hline(aes(yintercept = 0), color = "red", size = 1) +
+  geom_boxplot(alpha = 0.5) +
+  labs(
+    title = "Residuals by hour and building from fitted linear model with quadratic terms",
+    subtitle = "Lower residual magnitudes but clear trends still visible in residual plot",
+    x = "Hour",
+    y = "Sum of Residuals per Building"
+  )
+
+building_scaled %>% 
+  cor() %>% 
+  corrplot()
+```
+
+Suddenly we see a very different story, in which building characteristics matter very little and temporal features seem to matter much more. Interestingly, yearly fluctuations seem to matter more than monthly influences. The heavy emphasis on temporal variables, as well as the difficulty of fitting a linear model (with polynomial terms), as evidenced by clearly "wavy" residuals, motivates the following Fourier analysis. Finally, our visualization of the correlation matrix conveys how correlation mostly exists within non-temporal variables.
+
+## Unsupervised Fourier Analysis Clustering
+
+We begin by plotting time series of energy use at various temporal resolutions to gain a sense of what we will eventually attempt to characterize. It is unreasonable to use all available data to characterize each buildings energy usage patterns. Therefore, we look for ways to capture the "essence" of a building's energy usage patterns using various techniques, as shown below. These include a discrete Fourier transform, dimensionality reduction, and unsupervised clustering algorithms.
+
+```{r}
+building_id <- 9
+y <- 2016
+m <- 1
+w <- 2
+
+plot_time_var <- function(df, var) {
+  df %>% 
+    drop_na({{var}}) %>% 
+    ggplot(aes(date_time, {{var}})) +
+    geom_line()
+}
+
+building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  plot_time_var(kwh)
+
+building_energy %>% 
+  filter(id == building_id & year == y & month == m) %>% 
+  plot_time_var(kwh)
+
+building_energy %>% 
+  filter(id == building_id & year == y & week(date_time) == w) %>% 
+  plot_time_var(kwh) +
+  scale_x_datetime(
+    date_breaks = "1 day",
+    date_labels = "%a", 
+  )
+```
+
+We compute the discrete Fourier transform of `kwh` for our year of interest.
+
+```{r}
+fft_building <- 
+  building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  drop_na(kwh) %>% 
+  pull(kwh) %>% 
+  fft()
+```
+
+Since our goal is to simply capture the "essence" of building energy use, we do not need terms for all frequencies. Thus, we simply take the top 10 frequencies (by magnitude, and including the complementary frequency to ensure conjugate symmetry, as well as the DC frequency) and send all other frequencies to zero.
+
+```{r}
+freq_n <- 10
+
+fft_building_top <- 
+  fft_building %>% 
+  tibble(
+    fft = .,
+    mag_fft = abs(.)
+  ) %>% 
+  mutate(freq = row_number() - 1) %>% 
+  top_n(freq_n * 2 + 1, wt = mag_fft)
+
+filtered_freq <- 
+  fft_building %>% 
+  tibble(
+    fft = .,
+    mag_fft = abs(.)
+  ) %>% 
+  mutate(
+    freq = row_number() - 1,
+    fft = if_else(freq %in% fft_building_top$freq, fft, as.complex(0)),
+    mag_fft = abs(fft)
+  )
+```
+
+A magnitude plot of the DFT can be seen below. We synthesize a new signal (i.e. the "essence") from our truncated Fourier terms to form the following plots.
+
+```{r}
+filtered_freq %>% 
+  filter(mag_fft != 0) %>% 
+  ggplot(aes(freq, mag_fft)) +
+  geom_point()
+
+filtered_synthesis <- 
+  fft(filtered_freq$fft, inverse = TRUE) / length(fft_building)
+
+building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  drop_na(kwh) %>% 
+  mutate(kwh_fft = Re(filtered_synthesis)) %>% 
+  plot_time_var(kwh_fft) +
+  labs(
+    title = "Synthesized Fourier Time Series"
+  )
+
+building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  drop_na(kwh) %>% 
+  mutate(kwh_fft = Re(filtered_synthesis)) %>% 
+  filter(month == m) %>% 
+  plot_time_var(kwh_fft) +
+  labs(
+    title = "Synthesized Fourier Time Series"
+  )
+
+building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  drop_na(kwh) %>% 
+  mutate(kwh_fft = Re(filtered_synthesis)) %>% 
+  filter(week(date_time) == w) %>% 
+  plot_time_var(kwh_fft) +
+  scale_x_datetime(
+    date_breaks = "1 day",
+    date_labels = "%a", 
+  ) +
+  labs(
+    title = "Synthesized Fourier Time Series"
+  )
+
+building_energy %>% 
+  filter(id == building_id & year == y) %>% 
+  drop_na(kwh) %>% 
+  mutate(
+    kwh_fft = Re(filtered_synthesis),
+    kwh_diff = kwh_fft - kwh
+  ) %>% 
+  ggplot(aes(date_time, kwh_diff)) +
+  geom_hline(aes(yintercept = 0), color = "red", size = 2) +
+  geom_point(alpha = 0.2) +
+  labs(
+    title = "Residuals of original kwh time series and synthesized signal",
+    subtitle = "Residuals appear to be mostly uniformly random"
+  )
+
+```
+
+We perform K-means clustering on our Fourier coefficient frequencies and magnitudes (k-means clustering on all temporal data is inefficient and computationally expensive). However, first we perform principal component analysis (PCA) to avoid issues with high dimensionality in k-means. Thus, we perform K-means only on the first two principal components.
+
+```{r fig.asp=1}
+num_clust <- 3
+
+building_pca <- 
+  building_energy %>% 
+  drop_na(kwh) %>% 
+  group_by(id) %>% 
+  select(id, kwh) %>% 
+  transmute(
+    freq = log(row_number() - 1),
+    fft = fft(kwh),
+    mag_fft = log(abs(fft))
+  ) %>% 
+  top_n(freq_n * 2 + 1, wt = mag_fft) %>% 
+  top_n(freq_n + 1, wt = desc(freq)) %>% 
+  mutate(a_k = row_number()) %>% 
+  ungroup() %>% 
+  pivot_wider(
+    id_cols = -fft,
+    names_from = a_k,
+    values_from = c(freq, mag_fft)
+  ) %>% 
+  select(-id, -freq_1) %>% 
+  prcomp(., center = TRUE, scale = TRUE)
+
+ggbiplot(building_pca) +
+  labs(
+    title = "PCA Biplot"
+  )
+
+building_kmeans <- 
+  building_pca$x %>% 
+  as_tibble() %>% 
+  select(PC1, PC2) %>% 
+  kmeans(num_clust, nstart = 10)
+
+building_clusters <- 
+  building_pca$x %>% 
+  as_tibble() %>% 
+  mutate(
+    id = row_number(),
+    cluster = building_kmeans$cluster
+  )
+
+building_clusters %>% 
+  ggplot(aes(PC1, PC2, fill = as.factor(cluster))) +
+  geom_point(size = 4, shape = 21, color = "white") +
+  coord_equal(ratio = 1) +
+  labs(
+    title = "Cluster assignments of each building",
+    fill = "Cluster"
+  )
+
+building_energy %>% 
+  left_join(building_clusters, by = "id") %>% 
+  group_by(id, hour, cluster) %>% 
+  summarize(kwh_hourly_mean = mean(kwh, na.rm = TRUE)) %>% 
+  ggplot(aes(hour, kwh_hourly_mean, color = as.factor(cluster))) +
+  geom_line() +
+  facet_wrap(~ id, scales = "free_y") +
+  labs(
+    title = "Mean distribution of hourly energy usage in each building",
+    x = "Hour",
+    y = "Energy usage (kWh)",
+    color = "Cluster"
+  )
+  
+```
+
+We now take the mean across all buildings with the same cluster assignment to get a sense of the "typical" or "average" building within each cluster.
+
+```{r}
+building_energy_clusters <- 
+  building_energy %>% 
+  left_join(building_clusters, by = "id") %>% 
+  select_at(vars(-starts_with("PC"))) %>% 
+  group_by_at(vars(date_time, year, month, day, hour, cluster)) %>% 
+  select(-id, -apn, -freq) %>% 
+  summarize_if(is.numeric, mean, na.rm = TRUE)
+```
+
+```{r}
+k <- 1
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y & month == m) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>%  
+  filter(cluster == k & year == y & week(date_time) == w) %>% 
+  plot_time_var(kwh) +
+  scale_x_datetime(
+    date_breaks = "1 day",
+    date_labels = "%a", 
+  ) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+```
+
+```{r}
+k <- 2
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y & month == m) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>%  
+  filter(cluster == k & year == y & week(date_time) == w) %>% 
+  plot_time_var(kwh) +
+  scale_x_datetime(
+    date_breaks = "1 day",
+    date_labels = "%a", 
+  ) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+```
+
+```{r}
+k <- 3
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>% 
+  filter(cluster == k & year == y & month == m) %>% 
+  plot_time_var(kwh) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+
+building_energy_clusters %>%  
+  filter(cluster == k & year == y & week(date_time) == w) %>% 
+  plot_time_var(kwh) +
+  scale_x_datetime(
+    date_breaks = "1 day",
+    date_labels = "%a", 
+  ) +
+  labs(
+    title = str_glue("Average Time Series of Buildings in Cluster {k}")
+  )
+```
+
+Our unsupervised clustering technique seems to have identified three distinct building types. These are roughly:
+
+* High energy buildings
+* Low energy buildings with noisy lunchtime peaks (e.g. offices?)
+* Low energy buildings with smooth lunchtime peaks
+
+We can also explore the relationship between clusters and our original non-temporal variables. Clear trends/differences can be seen, although it's unclear if these variables could be used alone to generate effective clusters, especially in regards to the temporal shape/profile of energy usage patterns. Further, in our Fourier approach, it is possible to generate year-long time series with just a handful of Fourier coefficients and the inverse Fourier transform for each cluster, whereas the "average" time series for each cluster computed above may be noisy in comparison. The former method is not shown here/has not yet been implemented but is mentioned here for thoroughness and to convey the advantages of our methodology. 
+
+```{r}
+building_profile <- 
+  building_energy %>% 
+  left_join(building_clusters, by = "id") %>% 
+  select_at(vars(-starts_with("PC"), -year, -month, -day, -hour, -freq)) %>% 
+  group_by(id) %>% 
+  summarize_if(is.numeric, mean, na.rm = TRUE)
+
+cluster_boxplot <- function(df, var) {
+  df %>% 
+    ggplot(aes(cluster, {{var}}, group = cluster)) +
+    geom_boxplot()
+}
+
+building_profile %>% 
+  cluster_boxplot(kwh)
+
+building_profile %>% 
+  cluster_boxplot(year_built)
+
+building_profile %>% 
+  cluster_boxplot(num_stories)
+
+building_profile %>% 
+  cluster_boxplot(ground_floor)
+  
+building_profile %>% 
+  cluster_boxplot(net_rental)
+```
