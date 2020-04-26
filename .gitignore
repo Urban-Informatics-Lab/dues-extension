@@ -4,4 +4,6 @@
 .Ruserdata
 
 data/
+dues/
 *.rds
+.ipynb_checkpoints

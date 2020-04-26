@@ -21,16 +21,9 @@ library(leaps)
 library(e1071)
 library(tidyverse)
 
-# SMUD CSV File Paths
-
-assessor_data <- 'D:/SMUD/Assessor_Data.csv'
-ee_prog_ind <- 'D:/SMUD/EE_Program_indicators.csv'
-energy_ami <- 'D:/SMUD/Energy_AMI.csv'
-service_addr <- 'D:/SMUD/Service_Addresses.csv'
-
 # Project File Paths
 
-building_energy_rds <- here::here("data/building_energy.rds")
+building_energy_rds <- here::here("data/building_energy_actual.rds")
 
 set.seed(5)
 ```
@@ -42,7 +35,14 @@ set.seed(5)
 Note that all of the code in the following chunk will eventually be transferred to a separate data read/processing script with an associated Makefile. The code for data wrangling is kept here to be transparent about how the data is manipulated and stored before use.
 
 ```{r eval=FALSE}
-buildings <- 
+# SMUD CSV File Paths
+
+assessor_data <- 'D:/SMUD/Assessor_Data.csv'
+energy_ami <- 'D:/SMUD/Energy_AMI.csv'
+ee_prog_ind <- 'D:/SMUD/EE_Program_indicators.csv'
+service_addr <- 'D:/SMUD/Service_Addresses.csv'
+
+buildings <-
   read_csv(assessor_data) %>%
   transmute(
     apn = APN,
@@ -55,17 +55,17 @@ buildings <-
     street_number = as.character(`ns1:STREET_NUMBER`),
     street_name = as.character(`ns1:STREET_NAME`),
     street_suffix = as.character(`ns1:STREET_SUFFIX`)
-  ) %>% 
+  ) %>%
   unite(col = "street", starts_with("street_"), sep = " ")
 
-energy <- 
-  read_csv(energy_ami) %>% 
+energy <-
+  read_csv(energy_ami) %>%
   pivot_longer(
     cols = starts_with('kwh_'),
     names_to = "hour",
     names_pattern = "kwh_?(.*)",
     values_to = "kwh"
-  ) %>% 
+  ) %>%
   transmute(
     apn = APN,
     date_time = str_c(Date, "/", hour) %>% parse_date_time("%m/%d/%Y/%H"),
@@ -77,10 +77,10 @@ energy <-
     kwh = as.integer(kwh)
   )
 
-building_energy <- 
-  buildings %>% 
-  left_join(energy, by = "apn") %>% 
-  select(id, apn, date_time, kwh, everything()) %>% 
+building_energy <-
+  buildings %>%
+  left_join(energy, by = "apn") %>%
+  select(id, apn, date_time, kwh, everything()) %>%
   write_rds(building_energy_rds)
 ```
 
@@ -362,7 +362,17 @@ However, looking at a plot of the sum of residuals for each hour (sum per buildi
 
 ```{r}
 building_energy %>% 
-  drop_na(kwh) %>% 
+  drop_na(
+    kwh, 
+    year_built,
+    num_stories, 
+    ground_floor, 
+    net_rental, 
+    year, 
+    month, 
+    day, 
+    hour
+  ) %>% 
   mutate(resid = fit$residuals) %>% 
   count(id, hour, wt = resid) %>% 
   ggplot(aes(hour, n, group = hour)) +
@@ -413,7 +423,17 @@ scaled_kwh_fit$coefficients %>%
   )
 
 building_energy %>% 
-  drop_na(kwh) %>% 
+  drop_na(
+    kwh, 
+    year_built,
+    num_stories, 
+    ground_floor, 
+    net_rental, 
+    year, 
+    month, 
+    day, 
+    hour
+  ) %>%  
   mutate(resid = scaled_kwh_fit$residuals) %>% 
   count(id, hour, wt = resid) %>% 
   ggplot(aes(hour, n, group = hour)) +

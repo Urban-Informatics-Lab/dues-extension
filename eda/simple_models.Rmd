@@ -1,0 +1,110 @@
+---
+title: "simple_models"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(knitr)
+library(tidyverse)
+
+# Project File Paths
+
+e_actual_rds <- here::here("data/building_energy_actual.rds")
+e_sim_rds <- here::here("data/building_energy_sim.rds")
+
+e_featurized_rds <- here::here("data/building_energy_featurized.rds")
+e_featurized_csv <- here::here("data/building_energy_featurized.csv")
+
+set.seed(5)
+```
+
+```{r}
+e_actual <- read_rds(e_actual_rds)
+e_sim <- read_rds(e_sim_rds)
+```
+
+```{r}
+e_actual <- 
+  e_actual %>% 
+  select(apn, year, month, day, hour, kwh) %>% 
+  filter(apn != "00603700220000")
+
+e_sim <- 
+  e_sim %>% 
+  select(apn, year, month, day, hour, kwh)
+
+d1 <- e_actual %>% 
+  distinct(apn)
+
+d2 <- e_sim %>% distinct(apn)
+
+setdiff(d1, d2)
+setdiff(d2, d1)
+```
+
+`one_hot` function: [link](https://gist.github.com/EmilHvitfeldt/482412fa4ea7246a11c7b7a8504b7997)
+
+```{r}
+one_hot <- function(data, var) {
+  items <- data %>% pull({{var}})
+  items_unique <- items %>% unique()
+  
+  out <- matrix(0, nrow(data), length(items_unique))
+  colnames(out) <- items_unique
+  
+  for (i in items_unique) {
+    out[, i] <- items == i
+  }
+  out
+  data %>%
+    select(-{{var}}) %>%
+    bind_cols(
+      as_tibble(out) %>% 
+        rename_all(~ str_c("target_", .)) %>%
+        mutate_all(as.integer)
+    )
+}
+```
+
+```{r}
+e_featurized <- 
+  e_sim %>% 
+  select(-kwh) %>% 
+  left_join(e_actual) %>% 
+  drop_na() %>% 
+  rename(kwh_actual = kwh) %>% 
+  one_hot(apn) %>% 
+  left_join(
+    e_sim %>% 
+      pivot_wider(
+        names_from = apn,
+        names_prefix = "kwh_sim_",
+        values_from = kwh
+      )
+  )
+```
+
+```{r}
+test <- 
+  e_featurized %>% 
+  filter(target_00600340190000 == 1) %>% 
+  select_at(vars(-starts_with("target_"))) %>% 
+  mutate_all(~ scale(.) %>% as.vector)
+
+linearMod <- lm(kwh_actual ~ ., data = test)
+
+linearMod %>% summary()
+```
+
+```{r}
+e_featurized %>% 
+  write_rds(e_featurized_rds)
+
+e_featurized %>% 
+  write_csv(e_featurized_csv)
+```
+
