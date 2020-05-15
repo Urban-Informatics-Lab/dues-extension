@@ -1,5 +1,6 @@
 library(tidyverse)
 library(readxl)
+library(lubridate)
 
 # SMUD CSV File Paths
 
@@ -47,6 +48,18 @@ energy <-
     hour = hour(date_time),
     kwh = as.integer(kwh),
     freq = NA_integer_
+  ) %>% 
+  mutate(
+    date_time =
+      if_else(
+        hour == 0L, 
+        make_datetime(year, month, day, hour) + days(1), 
+        make_datetime(year, month, day, hour)
+      ),
+    year = year(date_time),
+    month = month(date_time),
+    day = day(date_time),
+    hour = hour(date_time)
   )
 
 building_energy <- 

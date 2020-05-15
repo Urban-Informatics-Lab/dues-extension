@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(knitr)
 library(tidyverse)
+library(lubridate)
 
 # Project File Paths
 
@@ -18,6 +19,14 @@ e_sim_rds <- here::here("data/building_energy_sim.rds")
 
 e_featurized_rds <- here::here("data/building_energy_featurized.rds")
 e_featurized_csv <- here::here("data/building_energy_featurized.csv")
+
+e_featurized_zscore_csv <- here::here("data/building_energy_featurized_zscore.csv")
+e_featurized_undo_zscore_csv <- here::here("data/building_energy_featurized_undo_zscore.csv")
+
+e_lstm_zscore_csv <- here::here("data/building_energy_lstm_zscore.csv")
+e_lstm_undo_zscore_csv <- here::here("data/building_energy_lstm_undo_zscore.csv")
+
+removed_buildings <- c("00603700220000", "00600360310000", "00600360380000")
 
 set.seed(5)
 ```
@@ -28,10 +37,22 @@ e_sim <- read_rds(e_sim_rds)
 ```
 
 ```{r}
+e_actual %>% 
+  ggplot(aes(log(kwh))) +
+  geom_histogram()
+
+e_sim %>% 
+  ggplot(aes(log(kwh))) +
+  geom_histogram()
+```
+
+Threshold at 1500 for observed.
+
+```{r}
 e_actual <- 
   e_actual %>% 
   select(apn, year, month, day, hour, kwh) %>% 
-  filter(apn != "00603700220000")
+  filter(!(apn %in% removed_buildings) & kwh < 1500)
 
 e_sim <- 
   e_sim %>% 
@@ -89,22 +110,200 @@ e_featurized <-
 ```
 
 ```{r}
+e_featurized %>% 
+  write_rds(e_featurized_rds)
+
+e_featurized %>% 
+  write_csv(e_featurized_csv)
+```
+
+```{r}
+# z-score of each building for both kwh_actual and kwh_sim
+e_featurized_zscore <- 
+  e_sim %>% 
+  select(-kwh) %>% 
+  left_join(e_actual) %>% 
+  drop_na() %>% 
+  group_by(apn) %>% 
+  mutate(
+    mean_kwh = mean(kwh),
+    sd_kwh = sd(kwh),
+    kwh = scale(kwh)
+  ) %>% 
+  ungroup() %>% 
+  rename(kwh_actual = kwh) %>%
+  one_hot(apn) %>%
+  left_join(
+    e_sim %>%
+      pivot_wider(
+        names_from = apn,
+        names_prefix = "kwh_sim_",
+        values_from = kwh
+      ) %>% 
+      mutate_at(vars(starts_with("kwh_sim_")), ~ scale(.) %>% as.vector)
+  )
+    
+e_featurized_undo_zscore <- 
+  e_sim %>% 
+  select(-kwh) %>% 
+  left_join(e_actual) %>% 
+  drop_na() %>% 
+  group_by(apn) %>% 
+  summarize(
+    mean_kwh = mean(kwh),
+    sd_kwh = sd(kwh)
+  )
+```
+
+```{r}
+e_featurized_zscore %>% 
+  write_csv(e_featurized_zscore_csv)
+
+e_featurized_undo_zscore %>% 
+  write_csv(e_featurized_undo_zscore_csv)
+```
+
+
+```{r}
+e_sim %>% 
+  pivot_wider(
+    names_from = apn,
+    names_prefix = "kwh_actual_",
+    values_from = kwh
+  ) %>% 
+  mutate(
+    date_time = make_datetime(year, month, day, hour),
+  ) %>%
+  select(date_time, everything()) %>% 
+  drop_na() %>% 
+  mutate(
+    diff = date_time - lag(date_time)
+  ) %>% 
+  select(diff, everything()) %>% 
+  count(diff)
+
+e_actual %>% 
+  pivot_wider(
+    names_from = apn,
+    names_prefix = "kwh_actual_",
+    values_from = kwh
+  ) %>% 
+  mutate(
+    date_time = make_datetime(year, month, day, hour)
+  ) %>% 
+  select(date_time, everything()) %>% 
+  drop_na() %>% 
+  mutate(
+    diff = date_time - lag(date_time)
+  ) %>% 
+  select(diff, everything()) %>% 
+  count(diff)
+```
+
+```{r}
+e_lstm_original <- 
+  e_sim %>% 
+  filter(apn %in% (e_actual %>% pull(apn) %>% unique())) %>% 
+  rename(kwh_sim = kwh) %>% 
+  left_join(e_actual) %>% 
+  rename(kwh_actual = kwh) %>% 
+  pivot_wider(
+    names_from = apn,
+    values_from = c("kwh_actual", "kwh_sim")
+  ) %>% 
+  mutate_all(
+    ~ if_else(
+      is.na(.), 
+      mean(., na.rm = TRUE) %>% as.integer(), 
+      as.integer(.)
+    )
+  )
+
+e_lstm_zscore <- 
+  e_lstm_original %>% 
+  mutate_at(vars(starts_with("kwh_")), ~ scale(.) %>% as.vector)
+  
+e_lstm_undo_zscore <- 
+  e_lstm_original %>% 
+  select(-starts_with("kwh_sim")) %>% 
+  pivot_longer(
+    cols = starts_with("kwh_actual_"),
+    names_to = "apn",
+    names_prefix = "kwh_actual_",
+    values_to = "kwh"
+  ) %>%
+  group_by(apn) %>% 
+  summarize(
+    mean_kwh = mean(kwh),
+    sd_kwh = sd(kwh)
+  )
+
+```
+
+```{r}
+e_lstm_zscore %>% 
+  write_csv(e_lstm_zscore_csv)
+
+e_lstm_undo_zscore %>% 
+  write_csv(e_lstm_undo_zscore_csv)
+```
+
+END OF DATA WRANGLING CODE
+
+```{r}
+e_sim %>% 
+  rename(kwh_sim = kwh) %>% 
+  left_join(e_actual) %>% 
+  drop_na(kwh) %>% 
+  mutate(diff = kwh - kwh_sim) %>% 
+  ggplot(aes(diff)) +
+  geom_vline(aes(xintercept = mean(diff, na.rm = TRUE)), color = "red") +
+  geom_vline(aes(xintercept = median(diff, na.rm = TRUE)), color = "blue") +
+  geom_histogram(binwidth = 20) +
+  labs(
+    title = "Distribution of difference in energy use (observed - simulated)",
+    subtitle = "Median in blue, mean in red. Most observations close to simulations",
+    x = "Observed - Simulated (kwh)",
+    y = "Frequency",
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+```
+
+```{r}
+e_sim %>% 
+  rename(kwh_sim = kwh) %>% 
+  left_join(e_actual) %>% 
+  drop_na(kwh) %>% 
+  mutate(kwh = kwh - kwh_sim) %>% 
+  mutate(month = lubridate::month(month, label = TRUE)) %>%
+  group_by(month, hour, apn) %>% 
+  summarize(mean_kwh_building = mean(kwh, na.rm = TRUE)) %>% 
+  summarize(mean_kwh = mean(mean_kwh_building, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(hour, fct_rev(month), fill = mean_kwh)) +
+  geom_tile() +
+  scale_x_continuous(expand = expand_scale()) +
+  scale_y_discrete(expand = expand_scale()) +
+  scale_fill_distiller(palette = "RdYlBu") +
+  labs(
+    title = "Mean difference between observed and simulated energy usage per month",
+    subtitle = "Observations too low midday in winter and too high morning/evening in summer",
+    x = "Hour",
+    y = "Month",
+    fill = "Obs - Sim \n(kWh)",
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+```
+
+```{r}
 test <- 
   e_featurized %>% 
-  filter(target_00600340190000 == 1) %>% 
+  # filter(target_00600340190000 == 1) %>% 
   select_at(vars(-starts_with("target_"))) %>% 
   mutate_all(~ scale(.) %>% as.vector)
 
 linearMod <- lm(kwh_actual ~ ., data = test)
 
 linearMod %>% summary()
-```
-
-```{r}
-e_featurized %>% 
-  write_rds(e_featurized_rds)
-
-e_featurized %>% 
-  write_csv(e_featurized_csv)
 ```
 
