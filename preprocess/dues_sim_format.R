@@ -46,7 +46,8 @@ energy <-
     month = month(date_time),
     day = day(date_time),
     hour = hour(date_time),
-    kwh = as.integer(kwh),
+    kwh,
+    # kwh = as.integer(kwh),
     freq = NA_integer_
   ) %>% 
   mutate(

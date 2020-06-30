@@ -45,7 +45,8 @@ energy <-
     day = day(date_time),
     hour = hour(date_time),
     freq = as.integer(`_FREQ_`),
-    kwh = as.integer(kwh)
+    kwh,
+    # kwh = as.integer(kwh),
   )
 
 building_energy <-

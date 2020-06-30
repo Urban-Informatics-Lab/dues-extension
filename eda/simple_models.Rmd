@@ -17,6 +17,9 @@ library(lubridate)
 e_actual_rds <- here::here("data/building_energy_actual.rds")
 e_sim_rds <- here::here("data/building_energy_sim.rds")
 
+e_actual_csv <- here::here("data/building_energy_actual.csv")
+e_sim_csv <- here::here("data/building_energy_sim.csv")
+
 e_featurized_rds <- here::here("data/building_energy_featurized.rds")
 e_featurized_csv <- here::here("data/building_energy_featurized.csv")
 
@@ -29,11 +32,31 @@ e_lstm_undo_zscore_csv <- here::here("data/building_energy_lstm_undo_zscore.csv"
 removed_buildings <- c("00603700220000", "00600360310000", "00600360380000")
 
 set.seed(5)
+
 ```
 
 ```{r}
 e_actual <- read_rds(e_actual_rds)
 e_sim <- read_rds(e_sim_rds)
+```
+```{r}
+e_sim_csv %>% 
+  read_csv()
+```
+
+```{r}
+e_sim
+e_actual %>% 
+  rename(kwh_actual = kwh) %>% 
+  left_join(e_sim, by = c("apn", "date_time")) %>% 
+  mutate(
+    kwh_actual = if_else(kwh_actual < 1, 1, kwh_actual),
+    percent_diff = 100 *  abs((kwh_actual - kwh) / kwh_actual)
+  ) %>% 
+  drop_na(percent_diff) %>% 
+  group_by(apn) %>% 
+  summarize(mean = mean(percent_diff)) %>% 
+  arrange(mean)
 ```
 
 ```{r}
@@ -65,6 +88,12 @@ d2 <- e_sim %>% distinct(apn)
 
 setdiff(d1, d2)
 setdiff(d2, d1)
+
+e_actual %>% 
+  write_csv(e_actual_csv)
+
+e_sim %>% 
+  write_csv(e_sim_csv)
 ```
 
 `one_hot` function: [link](https://gist.github.com/EmilHvitfeldt/482412fa4ea7246a11c7b7a8504b7997)
@@ -93,10 +122,8 @@ one_hot <- function(data, var) {
 
 ```{r}
 e_featurized <- 
-  e_sim %>% 
-  select(-kwh) %>% 
-  left_join(e_actual) %>% 
-  drop_na() %>% 
+  e_actual %>%
+  arrange(apn) %>% 
   rename(kwh_actual = kwh) %>% 
   one_hot(apn) %>% 
   left_join(
@@ -163,6 +190,11 @@ e_featurized_undo_zscore %>%
   write_csv(e_featurized_undo_zscore_csv)
 ```
 
+```{r}
+e_featurized_zscore %>% 
+  filter(year == 2019)
+```
+
 
 ```{r}
 e_sim %>% 
@@ -221,7 +253,11 @@ e_lstm_original <-
 
 e_lstm_zscore <- 
   e_lstm_original %>% 
-  mutate_at(vars(starts_with("kwh_")), ~ scale(.) %>% as.vector)
+  mutate(year = if_else(year == 2019L, 2016L, year)) %>% 
+  arrange(year, month, day, hour) %>% 
+  filter(!(month == 2 & day == 29)) %>% 
+  mutate_at(vars(starts_with("kwh_")), ~ scale(.) %>% as.vector) %>%
+  select(year, month, day, hour, starts_with("kwh_sim"), everything())
   
 e_lstm_undo_zscore <- 
   e_lstm_original %>% 
@@ -239,6 +275,12 @@ e_lstm_undo_zscore <-
   )
 
 ```
+
+```{r}
+e_lstm_original %>% 
+  filter(year == 2018)
+```
+
 
 ```{r}
 e_lstm_zscore %>% 
