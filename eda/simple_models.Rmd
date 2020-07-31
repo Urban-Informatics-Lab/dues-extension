@@ -18,6 +18,7 @@ e_actual_rds <- here::here("data/building_energy_actual.rds")
 e_sim_rds <- here::here("data/building_energy_sim.rds")
 
 e_actual_csv <- here::here("data/building_energy_actual.csv")
+e_actual_stationary_csv <- here::here("data/building_energy_actual_stationary.csv")
 e_sim_csv <- here::here("data/building_energy_sim.csv")
 
 e_featurized_rds <- here::here("data/building_energy_featurized.rds")
@@ -39,35 +40,6 @@ set.seed(5)
 e_actual <- read_rds(e_actual_rds)
 e_sim <- read_rds(e_sim_rds)
 ```
-```{r}
-e_sim_csv %>% 
-  read_csv()
-```
-
-```{r}
-e_sim
-e_actual %>% 
-  rename(kwh_actual = kwh) %>% 
-  left_join(e_sim, by = c("apn", "date_time")) %>% 
-  mutate(
-    kwh_actual = if_else(kwh_actual < 1, 1, kwh_actual),
-    percent_diff = 100 *  abs((kwh_actual - kwh) / kwh_actual)
-  ) %>% 
-  drop_na(percent_diff) %>% 
-  group_by(apn) %>% 
-  summarize(mean = mean(percent_diff)) %>% 
-  arrange(mean)
-```
-
-```{r}
-e_actual %>% 
-  ggplot(aes(log(kwh))) +
-  geom_histogram()
-
-e_sim %>% 
-  ggplot(aes(log(kwh))) +
-  geom_histogram()
-```
 
 Threshold at 1500 for observed.
 
@@ -75,25 +47,54 @@ Threshold at 1500 for observed.
 e_actual <- 
   e_actual %>% 
   select(apn, year, month, day, hour, kwh) %>% 
-  filter(!(apn %in% removed_buildings) & kwh < 1500)
+  filter(!(apn %in% removed_buildings) & kwh < 1500) %>% 
+  mutate(
+    datetime = make_datetime(year, month, day, hour),
+    day_of_week = wday(datetime)
+  ) %>% 
+  select(apn, year, month, day, hour, day_of_week, everything(), -datetime)
+
+e_actual
 
 e_sim <- 
   e_sim %>% 
   select(apn, year, month, day, hour, kwh)
-
-d1 <- e_actual %>% 
-  distinct(apn)
-
-d2 <- e_sim %>% distinct(apn)
-
-setdiff(d1, d2)
-setdiff(d2, d1)
 
 e_actual %>% 
   write_csv(e_actual_csv)
 
 e_sim %>% 
   write_csv(e_sim_csv)
+```
+
+```{r}
+e_actual %>% 
+  group_by(apn, year) %>% 
+  arrange(year) %>% 
+  mutate(mean_first_year = mean(kwh)) %>% 
+  group_by(apn) %>% 
+  mutate(
+    mean_first_year = mean_first_year %>% head(1)
+  ) %>% 
+  group_by(apn, year) %>% 
+  mutate(kwh = kwh * mean_first_year / mean(kwh)) %>% 
+  filter(apn == "00600340190000") %>%
+  mutate(datetime = make_datetime(year, month, day, hour)) %>% 
+  ggplot(aes(datetime, kwh)) +
+  geom_line()
+
+e_actual %>% 
+  group_by(apn, year) %>% 
+  arrange(year) %>% 
+  mutate(mean_first_year = mean(kwh)) %>% 
+  group_by(apn) %>% 
+  mutate(
+    mean_first_year = mean_first_year %>% head(1)
+  ) %>% 
+  group_by(apn, year) %>% 
+  mutate(kwh = kwh * mean_first_year / mean(kwh)) %>% 
+  select(-mean_first_year) %>% 
+  write_csv(e_actual_stationary_csv)
 ```
 
 `one_hot` function: [link](https://gist.github.com/EmilHvitfeldt/482412fa4ea7246a11c7b7a8504b7997)

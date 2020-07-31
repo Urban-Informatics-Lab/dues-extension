@@ -6,42 +6,32 @@ from sklearn import preprocessing
 def one_hot_encode(df, column, prefix):
     return pd.get_dummies(df, columns=[column], prefix=prefix)
 
-def prep_for_seq_lstm(df, query, timesteps, column='apn', prefix='target'):
+def equalize_timesteps(df, query, timesteps, column='apn', one_hot=True, prefix='target'):
     df = df.query(query)
     num_rows = df[column].value_counts().min() // timesteps * timesteps
-    return one_hot_encode(df.groupby(column).head(num_rows), column, prefix)
-
+    if one_hot:
+        return one_hot_encode(df.groupby(column).head(num_rows), column, prefix)
+    return df.groupby(column).head(num_rows)
+    
 def reshape_for_lstm(df, timesteps, df_name):
     print(df_name, end = ": ")
     df = df.reshape((df.shape[0], timesteps, df.shape[1] // timesteps))
     print(df.shape)
     return df
 
-def get_energy_df(energy_sim, energy_actual, one_hot=True):
-    actual_apn = energy_actual['apn'].unique()
-    energy_sim = energy_sim[energy_sim['apn'].isin(actual_apn)]
-    energy_actual = energy_actual.filter(items=['apn', 'year', 'month', 'day', 'hour', 'kwh'])
-    energy_sim = energy_sim.filter(items=['apn', 'year', 'month', 'day', 'hour', 'kwh'])
-    energy_actual.rename(columns={'kwh': 'kwh_actual_hold'}, inplace=True)
-    energy_actual.sort_values(by=['apn', 'year', 'month', 'day', 'hour'], inplace=True)
-
-    energy_sim['date'] = energy_sim['year'].astype(str) + "-" + energy_sim['month'].astype(str) +  "-" + energy_sim['day'].astype(str) + "-" + energy_sim['hour'].astype(str)
-    energy_sim = energy_sim.pivot(index='date', columns='apn', values='kwh').add_prefix("kwh_sim_")
-    energy_sim.reset_index(inplace=True)
-    time_vars = energy_sim['date'].apply(lambda x: pd.to_numeric(pd.Series(x.split('-'))))
-    time_vars.columns = ['year', 'month', 'day', 'hour']
-    energy_sim = pd.concat([time_vars, energy_sim], axis=1)
-    energy_sim.drop(columns='date', inplace=True)
-
-    energy = energy_actual.merge(energy_sim, how='left')
-    energy.sort_values(by=['apn', 'year', 'month', 'day', 'hour'], inplace=True)
-    if one_hot:
-        energy = one_hot_encode(energy, 'apn', 'target')
-    energy['kwh_actual'] = energy['kwh_actual_hold']
-    energy.drop(columns='kwh_actual_hold', inplace=True)
-    
-    return energy
-
+def agg_temporal(df, by_apn, temporal_scale, func):
+    if temporal_scale == 'hour':
+        return df
+    groupings = ['apn', 'year', 'month', 'day']
+    if not by_apn:
+        groupings = ['year', 'month', 'day']
+    thresholds = {'month': 28, 'day': 24}
+    df = df.drop(columns='hour')
+    while(groupings[-1] != temporal_scale):
+        df = df.groupby(groupings).filter(lambda x: len(x) >= thresholds[groupings[-1]]).groupby(groupings).agg('sum')
+        del groupings[-1]
+    return df.groupby(groupings).filter(lambda x: len(x) >= thresholds[groupings[-1]]).groupby(groupings).agg('sum').reset_index()
+        
 def series_to_supervised(data, n_in=1, n_out=1, dropnan=True, remove_target=True, target_name='kwh_actual'):
     n_vars_correction = -1 if remove_target else 0
     n_vars = 1 if type(data) is list else data.shape[1] + n_vars_correction
@@ -124,8 +114,104 @@ def preprocess(df, query, scaler, n_in, df_name, remove_target=True, lstm=True, 
 
 def get_standard_scaler(df, query, target):
     standard_scaler = preprocessing.StandardScaler()
-    standard_scaler.fit(df.query(query).drop(columns=target))
+    if query is not None:
+        standard_scaler.fit(df.query(query).drop(columns=target))
+    else:
+        standard_scaler.fit(df.drop(columns=target))
     return standard_scaler
+
+def train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, optimizer, loss, batch_size, shuffle, epochs, callbacks, verbose, model_name="Model", print_model_summary = False, val_agg_df=None, test_agg_df=None):
+    
+    model.compile(optimizer=optimizer, loss=loss)
+    
+    if print_model_summary:
+        model.summary()
+
+    history = model.fit(
+        train_x, train_y, 
+        validation_data=[val_x, val_y], 
+        batch_size = batch_size, 
+        shuffle = shuffle, 
+        epochs=epochs, 
+        callbacks=callbacks,
+        verbose=verbose
+    )
+    
+    val_metrics = get_metrics_and_plot(history, model, val_x, val_y, model_name, print_results=False, agg_df=val_agg_df)
+    test_metrics = get_metrics_and_plot(history, model, test_x, test_y, model_name, plot=False, print_results=False, agg_df=test_agg_df)
+    
+    return val_metrics, test_metrics
+
+def train_and_evaluate_simple_model(model, train_x, train_y, val_x, val_y, test_x, test_y):
+    model = model.fit(train_x, train_y)
+    
+    val_metrics = get_metrics(model, val_x, val_y, print_results=False)
+    test_metrics = get_metrics(model, test_x, test_y, print_results=False)
+    
+    return val_metrics, test_metrics
+    
+
+def walk_forward_cv(model, train_folds, val_folds, test_folds, optimizer='adam', loss='mape', batch_size=32, shuffle=True, epochs=30, callbacks=None, verbose=0, simple=False, model_name = "Model", val_agg_df=None, test_agg_df=None):
+    num_folds = len(train_folds)
+    
+    agg_val_metrics, agg_test_metrics = np.zeros((2, 3, 4)), np.zeros((2, 3, 4))
+    if val_agg_df is None:
+        agg_val_metrics, agg_test_metrics = np.zeros(4), np.zeros(4)
+    
+    for idx, train_fold in enumerate(train_folds):
+        print("\nFold #" + str(idx + 1))
+        val_fold = val_folds[idx]
+        test_fold = test_folds[idx]
+        
+        if simple:
+            val_metrics, test_metrics = train_and_evaluate_simple_model(
+                model,
+                train_fold[0], train_fold[1], 
+                val_fold[0], val_fold[1], 
+                test_fold[0], test_fold[1]
+            )
+        else:
+            val_input = val_agg_df
+            test_input = test_agg_df
+            if val_agg_df is not None:
+                val_input = val_agg_df[idx]
+                test_input = test_agg_df[idx]
+                
+            val_metrics, test_metrics = train_and_evaluate_model(
+                model,
+                train_fold[0], train_fold[1], 
+                val_fold[0], val_fold[1], 
+                test_fold[0], test_fold[1],
+                optimizer,
+                loss,
+                batch_size,
+                shuffle,
+                epochs,
+                callbacks,
+                verbose,
+                model_name,
+                print_model_summary = idx == 0,
+                val_agg_df=val_input, test_agg_df=test_input
+            )
+               
+
+        if val_agg_df is None:
+            print("\nValidation:")
+            print_metrics(*val_metrics)
+            print("\nTest:")
+            print_metrics(*test_metrics)
+        agg_val_metrics += np.array(val_metrics) / num_folds
+        agg_test_metrics += np.array(test_metrics) / num_folds
+
+    if val_agg_df is None:
+        print("\n4-Fold Average")
+        print("\nValidation:")
+        print_metrics(*agg_val_metrics)
+        print("\nTest:")
+        print_metrics(*agg_test_metrics)
+    
+    return np.stack([agg_val_metrics, agg_test_metrics])
+    
 
 def plot_train_history(history, title):
     loss = history.history['loss']
@@ -141,14 +227,191 @@ def plot_train_history(history, title):
     plt.legend()
 
     plt.show()
+
+def print_metrics(mape, mse, cv_rmse, mbe):
+    print("MAPE: " + str(mape))
+    print("MSE: " + str(mse))
+    print("CV(RMSE): " + str(cv_rmse))
+    print("MBE: " + str(mbe))
+
+def agg_metrics(agg_df, y_predictions, temporal_scale, spatial_scale='building'):
+    agg_df['kwh_pred'] = y_predictions
     
-def print_metrics(model, x, y):
+    energy_agg = agg_temporal(agg_df, by_apn=True, temporal_scale=temporal_scale, func='sum')
+    if spatial_scale == "urban":
+        energy_agg = energy_agg.groupby(energy_agg.columns[energy_agg.columns.isin(['year', 'month', 'day', 'hour'])].tolist()).agg('sum').reset_index()
+    y_actual = energy_agg['kwh_actual']
+    y_predictions = energy_agg['kwh_pred']
+    
+    mape = 100 * np.mean(np.abs(y_predictions / y_actual - 1))
+    mse = np.mean(np.power(y_predictions - y_actual, 2))
+    cv_rmse = 100 * np.sqrt(np.mean(np.power(y_predictions - y_actual, 2))) / np.mean(y_actual)
+    mbe = np.mean(y_predictions - y_actual)
+    
+    return mape, mse, cv_rmse, mbe
+    
+def get_metrics(model, x, y, print_results=True, agg_df=None):
     y = y.ravel()
     y_predictions = model.predict(x).ravel()
-    print("MAPE: " + str(100 * np.mean(np.abs(y_predictions / y - 1))))
-    print("CV(RMSE): " + str(100 * np.sqrt(np.mean(np.power(y_predictions - y, 2))) / np.mean(y)))
-    print("MBE: " + str(np.mean(y_predictions - y)))
+ 
+    metrics = np.zeros((2, 3, 4))
     
-def show_results(history, model, val_x, val_y, model_name = "Model"):
-    plot_train_history(history, model_name + " Training and Validation Loss")
-    print_metrics(model, val_x, val_y)
+    mape = 100 * np.mean(np.abs(y_predictions / y - 1))
+    print(mape)
+    if agg_df is not None:
+        metrics[0][0] = agg_metrics(agg_df, y_predictions, 'hour')
+        metrics[0][1] = agg_metrics(agg_df, y_predictions, 'day')
+        metrics[0][2] = agg_metrics(agg_df, y_predictions, 'month')
+        metrics[1][0] = agg_metrics(agg_df, y_predictions, 'hour', 'urban')
+        metrics[1][1] = agg_metrics(agg_df, y_predictions, 'day', 'urban')
+        metrics[1][2] = agg_metrics(agg_df, y_predictions, 'month', 'urban')
+        
+        return metrics
+
+    mape = 100 * np.mean(np.abs(y_predictions / y - 1))
+    mse = np.mean(np.power(y_predictions - y, 2))
+    cv_rmse = 100 * np.sqrt(np.mean(np.power(y_predictions - y, 2))) / np.mean(y)
+    mbe = np.mean(y_predictions - y)
+    
+    if print_results:
+        print_metrics(mape, mse, cv_rmse, mbe)
+        
+    return mape, mse, cv_rmse, mbe
+    
+def get_metrics_and_plot(history, model, x, y, model_name = "Model", plot=True, print_results=True, agg_df=None):
+    if plot:
+        plot_train_history(history, model_name + " Training and Validation Loss")
+    return get_metrics(model, x, y, print_results, agg_df=agg_df)
+
+def get_energy_df(energy_sim, energy_actual, one_hot=True, spatial_scale='building', temporal_scale='hour', add_context=True):
+    print("Retrieving DUE-S Energy Data...")
+    
+    actual_apn = energy_actual['apn'].unique()
+    energy_sim = energy_sim[energy_sim['apn'].isin(actual_apn)]
+    energy_actual = energy_actual.filter(items=['apn', 'year', 'month', 'day', 'day_of_week', 'hour', 'kwh'])
+    energy_sim = energy_sim.filter(items=['apn', 'year', 'month', 'day', 'hour', 'kwh'])
+    energy_actual.rename(columns={'kwh': 'kwh_actual_hold'}, inplace=True)
+    energy_actual.sort_values(by=['apn', 'year', 'month', 'day', 'hour'], inplace=True)
+    
+    groupings = ['year', 'month', 'day', 'hour']
+    if spatial_scale == 'urban':
+        NUM_BUILDINGS = len(actual_apn)
+        energy_actual = energy_actual.groupby(groupings).filter(lambda x: len(x) == NUM_BUILDINGS)
+        energy_actual = energy_actual.groupby(groupings).agg('sum').reset_index()
+        energy_actual = agg_temporal(energy_actual, by_apn=False, temporal_scale=temporal_scale, func='sum')
+    else:
+        energy_actual = agg_temporal(energy_actual, by_apn=True, temporal_scale=temporal_scale, func='sum')
+
+    if add_context:
+        energy_sim['date'] = energy_sim['year'].astype(str) + "-" + energy_sim['month'].astype(str) +  "-" + energy_sim['day'].astype(str) + "-" + energy_sim['hour'].astype(str)
+        energy_sim = energy_sim.pivot(index='date', columns='apn', values='kwh').add_prefix("kwh_sim_")
+        energy_sim.reset_index(inplace=True)
+        time_vars = energy_sim['date'].apply(lambda x: pd.to_numeric(pd.Series(x.split('-'))))
+        time_vars.columns = ['year', 'month', 'day', 'hour']
+        energy_sim = pd.concat([time_vars, energy_sim], axis=1)
+        energy_sim.drop(columns='date', inplace=True)
+    
+    energy_sim = agg_temporal(energy_sim, by_apn=False, temporal_scale=temporal_scale, func='sum')
+
+    energy = energy_actual.merge(energy_sim, how='left')
+    energy = energy[~energy.isnull().any(axis=1)]
+    
+    if spatial_scale == 'building':
+        groupings = ['apn', 'year', 'month', 'day', 'hour']
+        t_index = groupings.index(temporal_scale) + 1
+        grouping  = groupings[:t_index]
+        energy.sort_values(by=grouping, inplace=True)
+        if one_hot:
+            energy = one_hot_encode(energy, 'apn', 'target')
+    elif spatial_scale == 'urban':
+        groupings = ['year', 'month', 'day', 'hour']
+        t_index = groupings.index(temporal_scale) + 1
+        grouping  = groupings[:t_index]
+        energy.sort_values(by=grouping, inplace=True)
+        
+    energy['kwh_actual'] = energy['kwh_actual_hold']
+    energy.drop(columns='kwh_actual_hold', inplace=True)
+
+    return energy
+
+def make_supervised_arrays(df, fold_query, timesteps, scaler, df_name):
+    df = equalize_timesteps(df, fold_query, timesteps)
+#     df = one_hot_encode(df, 'day_of_week', 'wday')
+#     df.drop(columns=['year', 'day', 'hour'], inplace=True)
+#     df_no_target = df.filter(regex='^(month|kwh|wday)', axis=1)
+    df_no_target = df.filter(regex='^kwh', axis=1)
+    df_processed = preprocess(df_no_target, None, scaler, n_in=timesteps - 1, df_name=df_name, lstm=False)
+    df_x = np.hstack([df_processed[0], df.filter(regex='^target', axis=1).iloc[23:, :]])
+    df_y = df_processed[1]
+    
+    return df_x, df_y
+    
+def make_supervised_folds(folds, energy, timesteps, scaler):
+    
+    train_folds = []
+    val_folds = []
+    test_folds = []
+    
+    n_prev = timesteps - 1
+
+    for idx, fold in enumerate(folds):
+        print("Processing Fold #" + str(idx + 1) + "...")
+        
+        energy_train = equalize_timesteps(energy, fold[0], timesteps)
+        #energy_train = one_hot_encode(energy_train, 'day_of_week', 'wday')
+        #energy_train.drop(columns=['year', 'day', 'hour'], inplace=True)
+        #train_no_target = energy_train.filter(regex='^(month|kwh|wday)', axis=1)
+        train_no_target = energy_train.filter(regex='^kwh', axis=1)
+        
+        scaler = get_standard_scaler(train_no_target, None, 'kwh_actual')
+
+        train_folds.append(make_supervised_arrays(energy, fold[0], timesteps, scaler, "Train"))
+        val_folds.append(make_supervised_arrays(energy, fold[1], timesteps, scaler, "Val"))
+        test_folds.append(make_supervised_arrays(energy, fold[2], timesteps, scaler, "Test"))
+        
+    return train_folds, val_folds, test_folds
+
+def make_seq_folds(folds, energy, timesteps, scalers, lstm=True, get_scalers=False):
+
+    train_folds = []
+    val_folds = []
+    test_folds = []
+    
+    scalers_return = []
+
+    for idx, fold in enumerate(folds):
+        print("Processing Fold #" + str(idx + 1) + "...")
+
+        energy_train = equalize_timesteps(energy, fold[0], timesteps)      
+#         energy_train = one_hot_encode(energy_train, 'day_of_week', 'wday')
+#         energy_train.drop(columns=['year', 'day', 'hour'], inplace=True)
+        energy_train.drop(columns=['year', 'day', 'hour', 'month', 'day_of_week'], inplace=True)
+        
+        if get_scalers:
+            scalers_return.append(get_standard_scaler(energy_train, None, 'kwh_actual'))
+            continue
+        
+        scaler = None
+        if scalers is None:
+            scaler = get_standard_scaler(energy_train, None, 'kwh_actual')
+        else:
+            scaler = scalers[idx]
+            
+        energy_val = equalize_timesteps(energy, fold[1], timesteps)
+#         energy_val = one_hot_encode(energy_val, 'day_of_week', 'wday')
+#         energy_val.drop(columns=['year', 'day', 'hour'], inplace=True)
+        energy_val.drop(columns=['year', 'day', 'hour', 'month', 'day_of_week'], inplace=True)
+
+        energy_test = equalize_timesteps(energy, fold[2], timesteps)
+#         energy_test = one_hot_encode(energy_test, 'day_of_week', 'wday')
+#         energy_test.drop(columns=['year', 'day', 'hour'], inplace=True)
+        energy_test.drop(columns=['year', 'day', 'hour', 'month', 'day_of_week'], inplace=True)
+
+        train_folds.append(preprocess(energy_train, None, scaler, n_in=timesteps, df_name="Train", remove_target=False, lstm=lstm, to_supervised=False))
+        val_folds.append(preprocess(energy_val, None, scaler, n_in=timesteps, df_name="Val", remove_target=False, lstm=lstm, to_supervised=False))
+        test_folds.append(preprocess(energy_test, None, scaler, n_in=timesteps, df_name="Test", remove_target=False, lstm=lstm, to_supervised=False))
+        
+    if get_scalers:
+        return scalers_return
+    
+    return train_folds, val_folds, test_folds

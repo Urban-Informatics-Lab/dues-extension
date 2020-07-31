@@ -1,0 +1,93 @@
+---
+title: "retrofit"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(knitr)
+library(tidyverse)
+library(lubridate)
+
+# Project File Paths
+
+input_root <- 'D:/SMUD/Simulation_Data/Block_Retrofits/block_'
+output_root <- "data/block/"
+
+e_retrofit_baseline_data_csv <- str_c(input_root, 'baseline_sim.csv')
+e_retrofit_baseline_csv <- here::here(str_c(output_root, 'building_energy_retrofit_baseline.csv'))
+
+e_retrofit_full_data_csv <- str_c(input_root, 'full_retrofit.csv')
+e_retrofit_full_csv <- here::here(str_c(output_root, 'building_energy_retrofit_full.csv'))
+
+e_retrofit_light_data_csv <- str_c(input_root, 'light_retrofit.csv')
+e_retrofit_light_csv <- here::here(str_c(output_root, 'building_energy_retrofit_light.csv'))
+
+e_retrofit_window_data_csv <- str_c(input_root, 'window_retrofit.csv')
+e_retrofit_window_csv <- here::here(str_c(output_root, 'building_energy_retrofit_window.csv'))
+
+removed_buildings <- c("00603700220000", "00600360310000", "00600360380000")
+
+set.seed(5)
+```
+
+```{r}
+format_sim <- function(input_path, output_path) {
+  input_path %>% 
+    read_csv() %>% 
+    select(-X1) %>%
+    pivot_longer(
+      cols = starts_with('Building '),
+      names_to = "apn",
+      names_pattern = "Building ?(.*) .*",
+      values_to = "kwh"
+    ) %>% 
+    transmute(
+      apn = str_c("00", apn),
+      date_time = `Date/Time`,
+      year = year(date_time),
+      month = month(date_time),
+      day = day(date_time),
+      hour = hour(date_time),
+      kwh,
+      # kwh = as.integer(kwh),
+      freq = NA_integer_
+    ) %>% 
+    mutate(
+      date_time =
+        if_else(
+          hour == 0L, 
+          make_datetime(year, month, day, hour) + days(1), 
+          make_datetime(year, month, day, hour)
+        ),
+      year = year(date_time),
+      month = month(date_time),
+      day = day(date_time),
+      hour = hour(date_time)
+    ) %>% 
+    select(apn, year, month, day, hour, kwh) %>%
+    write_csv(output_path)
+}
+
+# format_sim(e_retrofit_baseline_data_csv, e_retrofit_baseline_csv)
+format_sim(e_retrofit_full_data_csv, e_retrofit_full_csv)
+format_sim(e_retrofit_light_data_csv, e_retrofit_light_csv)
+format_sim(e_retrofit_window_data_csv, e_retrofit_window_csv)
+```
+
+```{r}
+e_retrofit_full_csv %>% 
+  read_csv() %>% 
+  filter(apn %in% top_mape)
+  
+```
+
+```{r}
+e_retrofit_baseline_csv %>% 
+  read_csv() %>% 
+  filter(apn == "00600340190000", year == "2016", month == 2)
+```
+
