@@ -364,10 +364,11 @@ retrofit_all_mae %>%
     apn,
     datetime = make_datetime(year, month, day, hour),
     kwh = 100 * (kwh_full / kwh_baseline - 1),
-    data = if_else(kwh >= 0, "positive change", "negative change")
+    data = if_else(kwh >= 0, "positive change", "negative change"),
+    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
   ) %>% 
   left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = str_to_title(data))) +
+  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) +
   geom_segment(alpha = 0.5) +
   geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) +
   facet_wrap(~ str_to_title(street), scales = "free") +
@@ -377,8 +378,8 @@ retrofit_all_mae %>%
     title = "% Change for Buildings with Increase in Energy Use",
     subtitle = "Generally low-energy buildings, with irregular energy use patterns in 2018",
     x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
+    y = "% Change from Baseline",
+    fill = NULL,
     caption = "Source: Sacramento Municipal Utility District"
   )
 
@@ -416,10 +417,11 @@ retrofit_all_mae %>%
     apn,
     datetime = make_datetime(year, month, day, hour),
     kwh = 100 * (kwh_full / kwh_baseline - 1),
-    data = if_else(kwh >= 0, "positive change", "negative change")
+    data = if_else(kwh >= 0, "positive change", "negative change"),
+    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
   ) %>% 
   left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = str_to_title(data))) +
+  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) +
   geom_segment(alpha = 0.5) +
   geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) +
   facet_wrap(~ str_to_title(street), scales = "free") +
@@ -429,8 +431,56 @@ retrofit_all_mae %>%
     title = "% Change for Buildings with Decrease in Energy Use",
     subtitle = "Dramatic reductions compared to buildings with increase",
     x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
+    y = "% Change from Baseline",
+    fill = NULL,
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+
+retrofit_all_mae %>%
+  filter(apn %in% positive) %>%
+  group_by(apn, hour) %>% 
+  summarize(
+    kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean
+  ) %>% 
+  mutate(
+    data = if_else(kwh < 0, "negative change", "positive change"),
+    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
+  ) %>% 
+  left_join(buildings, by = 'apn') %>%
+  ggplot(aes(hour, kwh, fill = data)) +
+  geom_col() +
+  facet_wrap(~ str_to_title(street), scales = "free") +
+  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
+  labs(
+    title = "% Change for Buildings with Increase in Energy Use",
+    subtitle = "Most deviation early and late in day",
+    x = "Hour",
+    y = "% Change from Baseline",
+    fill = NULL,
+    caption = "Source: Sacramento Municipal Utility District"
+  )
+
+retrofit_all_mae %>%
+  filter(apn %in% negative) %>%
+  group_by(apn, hour) %>% 
+  summarize(
+    kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean
+  ) %>% 
+  mutate(
+    data = if_else(kwh < 0, "negative change", "positive change"),
+    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
+  ) %>% 
+  left_join(buildings, by = 'apn') %>%
+  ggplot(aes(hour, kwh)) +
+  geom_col(fill = "turquoise3") +
+  facet_wrap(~ str_to_title(street), scales = "free") +
+  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
+  labs(
+    title = "% Change for Buildings with Decrease in Energy Use",
+    subtitle = "Most deviation early and late in day",
+    x = "Hour",
+    y = "% Change from Baseline",
+    fill = NULL,
     caption = "Source: Sacramento Municipal Utility District"
   )
 ```
