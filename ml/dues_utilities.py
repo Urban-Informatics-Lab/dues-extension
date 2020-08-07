@@ -5,6 +5,12 @@ from sklearn import preprocessing
 
 def one_hot_encode(df, column, prefix):
     return pd.get_dummies(df, columns=[column], prefix=prefix)
+    
+def reshape_for_lstm(df, timesteps, df_name):
+    print(df_name, end = ": ")
+    df = df.reshape((df.shape[0], timesteps, df.shape[1] // timesteps))
+    print(df.shape)
+    return df
 
 def equalize_timesteps(df, query, timesteps, column='apn', one_hot=True, prefix='target'):
     df = df.query(query)
@@ -12,12 +18,6 @@ def equalize_timesteps(df, query, timesteps, column='apn', one_hot=True, prefix=
     if one_hot:
         return one_hot_encode(df.groupby(column).head(num_rows), column, prefix)
     return df.groupby(column).head(num_rows)
-    
-def reshape_for_lstm(df, timesteps, df_name):
-    print(df_name, end = ": ")
-    df = df.reshape((df.shape[0], timesteps, df.shape[1] // timesteps))
-    print(df.shape)
-    return df
 
 def agg_temporal(df, by_apn, temporal_scale, func):
     if temporal_scale == 'hour':
@@ -151,7 +151,7 @@ def train_and_evaluate_simple_model(model, train_x, train_y, val_x, val_y, test_
     return val_metrics, test_metrics
     
 
-def walk_forward_cv(model, train_folds, val_folds, test_folds, optimizer='adam', loss='mape', batch_size=32, shuffle=True, epochs=30, callbacks=None, verbose=0, simple=False, model_name = "Model", val_agg_df=None, test_agg_df=None):
+def walk_forward_cv(model, train_folds, val_folds, test_folds, optimizer='adam', loss='mae', batch_size=32, shuffle=True, epochs=30, callbacks=None, verbose=0, simple=False, model_name = "Model", val_agg_df=None, test_agg_df=None):
     num_folds = len(train_folds)
     
     agg_val_metrics, agg_test_metrics = np.zeros((2, 3, 4)), np.zeros((2, 3, 4))
@@ -200,17 +200,44 @@ def walk_forward_cv(model, train_folds, val_folds, test_folds, optimizer='adam',
             print_metrics(*val_metrics)
             print("\nTest:")
             print_metrics(*test_metrics)
-        agg_val_metrics += np.array(val_metrics) / num_folds
-        agg_test_metrics += np.array(test_metrics) / num_folds
+            
+        # Remove if statement and uncomment code below for cross-fold averages.
+        if idx == num_folds - 1:
+            agg_val_metrics += np.array(val_metrics) # / num_folds
+            agg_test_metrics += np.array(test_metrics) # / num_folds
 
-    if val_agg_df is None:
-        print("\n4-Fold Average")
-        print("\nValidation:")
-        print_metrics(*agg_val_metrics)
-        print("\nTest:")
-        print_metrics(*agg_test_metrics)
+#     if val_agg_df is None:
+#         print("\nAll-Fold Average")
+#         print("\nValidation:")
+#         print_metrics(*agg_val_metrics)
+#         print("\nTest:")
+#         print_metrics(*agg_test_metrics)
     
     return np.stack([agg_val_metrics, agg_test_metrics])
+
+def repeat_experiment(model, N, train_folds, val_folds, test_folds, callbacks, verbose, model_name="Model", val_agg_df=None, test_agg_df=None):
+    untrained_model_weights = model.get_weights()
+    
+    metrics = np.zeros((2,4))
+    if val_agg_df is not None:
+        metrics = np.zeros((2, 2, 3, 4))
+
+    for num_exp in range(N):
+        exp_model = model
+        exp_model.set_weights(untrained_model_weights)
+        print("-----Experiment #" + str(num_exp + 1) + "-----")
+        metrics = metrics + walk_forward_cv(
+            exp_model, 
+            train_folds, 
+            val_folds, 
+            test_folds, 
+            callbacks=callbacks, 
+            verbose=verbose, 
+            model_name=model_name,
+            val_agg_df=val_agg_df, test_agg_df=test_agg_df
+        ) / N
+        
+    return metrics
     
 
 def plot_train_history(history, title):
@@ -227,28 +254,6 @@ def plot_train_history(history, title):
     plt.legend()
 
     plt.show()
-
-def print_metrics(mape, mse, cv_rmse, mbe):
-    print("MAPE: " + str(mape))
-    print("MSE: " + str(mse))
-    print("CV(RMSE): " + str(cv_rmse))
-    print("MBE: " + str(mbe))
-
-def agg_metrics(agg_df, y_predictions, temporal_scale, spatial_scale='building'):
-    agg_df['kwh_pred'] = y_predictions
-    
-    energy_agg = agg_temporal(agg_df, by_apn=True, temporal_scale=temporal_scale, func='sum')
-    if spatial_scale == "urban":
-        energy_agg = energy_agg.groupby(energy_agg.columns[energy_agg.columns.isin(['year', 'month', 'day', 'hour'])].tolist()).agg('sum').reset_index()
-    y_actual = energy_agg['kwh_actual']
-    y_predictions = energy_agg['kwh_pred']
-    
-    mape = 100 * np.mean(np.abs(y_predictions / y_actual - 1))
-    mse = np.mean(np.power(y_predictions - y_actual, 2))
-    cv_rmse = 100 * np.sqrt(np.mean(np.power(y_predictions - y_actual, 2))) / np.mean(y_actual)
-    mbe = np.mean(y_predictions - y_actual)
-    
-    return mape, mse, cv_rmse, mbe
     
 def get_metrics(model, x, y, print_results=True, agg_df=None):
     y = y.ravel()
@@ -257,7 +262,7 @@ def get_metrics(model, x, y, print_results=True, agg_df=None):
     metrics = np.zeros((2, 3, 4))
     
     mape = 100 * np.mean(np.abs(y_predictions / y - 1))
-    print(mape)
+
     if agg_df is not None:
         metrics[0][0] = agg_metrics(agg_df, y_predictions, 'hour')
         metrics[0][1] = agg_metrics(agg_df, y_predictions, 'day')
@@ -282,6 +287,34 @@ def get_metrics_and_plot(history, model, x, y, model_name = "Model", plot=True, 
     if plot:
         plot_train_history(history, model_name + " Training and Validation Loss")
     return get_metrics(model, x, y, print_results, agg_df=agg_df)
+
+def print_metrics(mape, mse, cv_rmse, mbe):
+    print("MAPE: " + str(mape))
+    print("MSE: " + str(mse))
+    print("CV(RMSE): " + str(cv_rmse))
+    print("MBE: " + str(mbe))
+
+def agg_metrics(agg_df, y_predictions, temporal_scale, spatial_scale='building'):
+    agg_df['kwh_pred'] = y_predictions
+    
+    energy_agg = agg_temporal(agg_df, by_apn=True, temporal_scale=temporal_scale, func='sum')
+    if spatial_scale == "urban":
+        energy_agg = energy_agg.groupby(energy_agg.columns[energy_agg.columns.isin(['year', 'month', 'day', 'hour'])].tolist()).agg('sum').reset_index()
+    y_actual = energy_agg['kwh_actual']
+    y_predictions = energy_agg['kwh_pred']
+    
+    mape = 100 * np.mean(np.abs(y_predictions / y_actual - 1))
+    mse = np.mean(np.power(y_predictions - y_actual, 2))
+    cv_rmse = 100 * np.sqrt(np.mean(np.power(y_predictions - y_actual, 2))) / np.mean(y_actual)
+    mbe = np.mean(y_predictions - y_actual)
+    
+    return mape, mse, cv_rmse, mbe
+
+def print_overall_metrics(metrics):
+    print("\nOverall Validation:")
+    print_metrics(*metrics[0])
+    print("\nOverall Test:")
+    print_metrics(*metrics[1])
 
 def get_energy_df(energy_sim, energy_actual, one_hot=True, spatial_scale='building', temporal_scale='hour', add_context=True):
     print("Retrieving DUE-S Energy Data...")
@@ -345,6 +378,22 @@ def make_supervised_arrays(df, fold_query, timesteps, scaler, df_name):
     df_y = df_processed[1]
     
     return df_x, df_y
+
+def get_folds(n):
+    
+    if n == 3:
+        fold_1 = ['year <= 2016 and month < 7', 'year == 2016 and month >= 7', 'year == 2017 and month < 7']
+        fold_2 = ['year <= 2016', 'year == 2017 and month < 7', 'year == 2017 and month >= 7']
+        fold_3 = ['(year == 2017 and month < 7) or year <= 2016', 'year == 2017 and month >= 7', 'year == 2018']
+        return [fold_1, fold_2, fold_3]
+    elif n == 4:
+        fold_1 = ['year <= 2016 and month < 7', 'year == 2016 and month >= 7', 'year == 2017 and month < 7']
+        fold_2 = ['year <= 2016', 'year == 2017 and month < 7', 'year == 2017 and month >= 7']
+        fold_3 = ['(year == 2017 and month < 7) or year <= 2016', 'year == 2017 and month >= 7', 'year == 2018 and month < 7']
+        fold_4 = ['year <= 2017', 'year == 2018 and month < 7', 'year == 2018 and month >= 7']
+        return [fold_1, fold_2, fold_3, fold_4]
+    
+    print("Error: Unsupported number of folds.")
     
 def make_supervised_folds(folds, energy, timesteps, scaler):
     

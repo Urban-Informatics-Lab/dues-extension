@@ -282,7 +282,7 @@ grouped_mape <- function(df, ...) {
     pull(mean)
 }
 
-retrofit_all %>% 
+retrofit_all_mae_no_context %>% 
   summarize(
     building_hourly = grouped_mape(., apn, year, month, day, hour),
     building_daily = grouped_mape(., apn, year, month, day),
@@ -294,6 +294,17 @@ retrofit_all %>%
   glimpse()
 
 retrofit_all_mae %>% 
+  summarize(
+    building_hourly = grouped_mape(., apn, year, month, day, hour),
+    building_daily = grouped_mape(., apn, year, month, day),
+    building_monthly = grouped_mape(., apn, year, month),
+    urban_hourly = grouped_mape(., year, month, day, hour),
+    urban_daily = grouped_mape(., year, month, day),
+    urban_monthly = grouped_mape(., year, month)
+  ) %>% 
+  glimpse()
+
+retrofit_all_mae_no_context %>% 
   summarize(
     building_hourly = grouped_mape(., apn, year, month, day, hour),
     building_daily = grouped_mape(., apn, year, month, day),
