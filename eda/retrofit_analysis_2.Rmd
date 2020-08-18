@@ -1,0 +1,220 @@
+---
+title: "retrofit_analysis_2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+building_info_xlsx <- 'D:/SMUD/due-s_organizing.xlsx'
+distances_csv <- 'D:/SMUD/smud_distances.csv'
+
+e_actual_stationary_csv <-
+  here::here('data/building_energy_actual_stationary.csv')
+
+PATH_FULL_SAVINGS_HISTORY <-
+  here::here('savings_analysis/full_savings.csv')
+PATH_LIGHT_SAVINGS_HISTORY <- 
+  here::here('savings_analysis/light_savings.csv')
+PATH_WINDOW_SAVINGS_HISTORY <- 
+  here::here('savings_analysis/window_savings.csv')
+
+PATH_FULL_NO_CONTEXT_SAVINGS_HISTORY <- 
+  here::here('savings_analysis/full_savings_no_context.csv')
+PATH_LIGHT_NO_CONTEXT_SAVINGS_HISTORY <- 
+  here::here('savings_analysis/light_savings_no_context.csv')
+PATH_WINDOW_NO_CONTEXT_SAVINGS_HISTORY <- 
+  here::here('savings_analysis/window_savings_no_context.csv')
+```
+
+```{r}
+buildings <- 
+  building_info_xlsx %>% 
+  read_xlsx(sheet = 2) %>% 
+  transmute(
+    apn = str_c('00', APN),
+    id = row_number(),
+    year_built = as.integer(`ns1:YEAR_BUILT`),
+    num_stories = as.integer(`ns1:NUMBER_OF_STORIES`),
+    ground_floor = as.integer(`ns1:GROUND_FLOOR_GROSS`),
+    height = as.integer(`HEIGHT (m)`),
+    net_rental = as.integer(`ns1:NET_RENTAL`),
+    owner = `ns1:OWNER`,
+    primary_use = PRIMARY_USE,
+    hvac_type = HVAC_Type,
+    street_number = `ns1:STREET_NUMBER`,
+    street_name = `ns1:STREET_NAME`,
+    street_suffix = `ns1:STREET_SUFFIX`
+  ) %>%
+  unite(col = "street", starts_with("street_"), sep = " ")
+
+distances <- 
+  distances_csv %>% 
+  read_csv(
+  ) %>% 
+  mutate(apn = str_c("00", as.character(Buildings))) %>% 
+  select(apn, everything(), -Buildings, -X1) %>% 
+  drop_na()
+
+apn <- 
+  distances %>%
+  pull(apn)
+
+distances <- 
+  distances %>% 
+  drop_na() %>%
+  set_names(c("apn", apn)) %>% 
+  pivot_longer(
+    cols = -apn,
+    names_to = "apn_2",
+    values_to = "distance"
+  )
+
+e_actual_means <- 
+  e_actual_stationary_csv %>% 
+  read_csv() %>% 
+  group_by(apn) %>% 
+  summarize(mean_kwh = mean(kwh))
+
+full <- 
+  PATH_FULL_SAVINGS_HISTORY %>% 
+  read_csv()
+
+full_nc <- 
+  PATH_FULL_NO_CONTEXT_SAVINGS_HISTORY %>% 
+  read_csv()
+
+light <- 
+  PATH_LIGHT_SAVINGS_HISTORY %>% 
+  read_csv()
+
+light_nc <- 
+  PATH_LIGHT_NO_CONTEXT_SAVINGS_HISTORY %>% 
+  read_csv()
+
+window <- 
+  PATH_WINDOW_SAVINGS_HISTORY %>% 
+  read_csv()
+
+window_nc <- 
+  PATH_WINDOW_NO_CONTEXT_SAVINGS_HISTORY %>% 
+  read_csv()
+```
+
+```{r}
+full_building <- 
+  full %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+full_nc_building <- 
+  full_nc %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+light_building <- 
+  light %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+light_nc_building <- 
+  light_nc %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+window_building <- 
+  window %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+window_nc_building <- 
+  window_nc %>% 
+  mutate(building = str_remove(building, "kwh_sim_")) %>% 
+  left_join(e_actual_means, by = c('building' = 'apn')) %>% 
+  left_join(buildings, by = c('building' = 'apn'))
+
+full_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Full Retrofit, With Context")
+
+full_nc_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Full Retrofit, No Context")
+
+light_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Light Retrofit, With Context")
+
+light_nc_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Light Retrofit, No Context")
+
+window_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Window Retrofit, With Context")
+
+window_nc_building %>% 
+  ggplot(aes(mean_kwh, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Window Retrofit, No Context")
+```
+
+```{r}
+full_building %>% 
+  left_join(distances, by = c('building' = 'apn')) %>% 
+  group_by(building, savings, primary_use) %>% 
+  summarize(mean_distance = mean(distance)) %>% 
+  ggplot(aes(mean_distance, savings)) +
+  geom_point(aes(color = primary_use)) +
+  labs(title = "Full Retrofit, With Context")
+
+full_nc_building %>% 
+  left_join(distances, by = c('building' = 'apn')) %>% 
+  group_by(building, savings) %>% 
+  summarize(mean_distance = mean(distance)) %>% 
+  ggplot(aes(mean_distance, savings)) +
+  geom_point() +
+  labs(title = "Full Retrofit, No Context")
+```
+
+```{r}
+common <- 
+  c('00603700370000', '00601450250000', '00601530150000')
+
+full_building %>% 
+  left_join(distances, by = c('building' = 'apn')) %>% 
+  group_by_at(vars(-distance, -apn_2)) %>% 
+  summarize(mean_distance = mean(distance)) %>%
+  summary
+
+full_building %>% 
+  left_join(distances, by = c('building' = 'apn')) %>% 
+  group_by_at(vars(-distance, -apn_2)) %>% 
+  summarize(mean_distance = mean(distance)) %>% 
+  filter(building %in% common) %>% 
+  write_csv('temp.csv')
+
+full_building
+full_nc_building
+
+light_building
+light_nc_building
+
+window_building
+window_nc_building
+```
+

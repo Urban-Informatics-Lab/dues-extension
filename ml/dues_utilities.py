@@ -464,3 +464,100 @@ def make_seq_folds(folds, energy, timesteps, scalers, lstm=True, get_scalers=Fal
         return scalers_return
     
     return train_folds, val_folds, test_folds
+
+def make_test_fold_fast(df, query, num_obs, target_one_hot, scaler, timesteps):
+    df = df.query(query).groupby('apn').head(num_obs)
+    df = pd.concat((df, target_one_hot), axis=1)
+    
+    series_x = pd.DataFrame(scaler.transform(df.drop(columns=['apn', 'year', 'day', 'hour', 'month', 'day_of_week', 'kwh_actual'])))
+    series_x.reset_index(drop=True, inplace=True)
+    
+    sequence = np.array(series_x)
+    
+    return sequence.reshape((-1, timesteps, sequence.shape[1]))
+
+def calc_savings(model, energy, energy_full, folds, num_rows, target_one_hot, scaler, timesteps, subset, baseline_energy):
+    update_from = energy_full.filter(subset)
+    update_to = energy.copy()
+    update_to.update(update_from)
+    test_fold = make_test_fold_fast(update_to, folds[-1][-1], num_rows, target_one_hot, scaler, timesteps)
+
+    retrofit_energy = np.sum(model.predict(test_fold))
+
+    return 100 * (retrofit_energy / baseline_energy - 1)
+
+def stepwise_selection(model, energy, retrofit_df, folds, test_folds, scaler, timesteps, savings_path):
+    
+    df = energy.query(folds[-1][-1])
+    num_rows = df['apn'].value_counts().min() // timesteps * timesteps
+    df = one_hot_encode(df.groupby('apn').head(num_rows), 'apn', 'target')
+    target_one_hot = df.filter(regex='^target', axis=1)
+    series_y = df['kwh_actual'].copy().reset_index(drop=True).apply(lambda x: np.where(x < 1, 1, x))
+    baseline_energy = np.sum(model.predict(test_folds[-1][0]))
+
+    all_columns = np.array(retrofit_df.filter(regex='^kwh_sim', axis=1).columns)
+    
+    building_pool = list(all_columns)
+    building_set = []
+    savings_history = []
+
+    total_savings = 0
+
+    while True:
+        best = 0
+        for building in building_pool:
+            building_set.append(building)
+            saving = calc_savings(model, energy, retrofit_df, folds, num_rows, target_one_hot, scaler, timesteps, building_set, baseline_energy)
+            saving_diff = saving - total_savings
+            if saving_diff < best:
+                best = saving_diff
+                best_building = building
+            building_set.pop()
+        if best == 0:
+            break
+        total_savings += best
+        savings_history.append(best)
+        building_set.append(best_building)
+        building_pool.remove(best_building)
+
+        if not building_pool:
+            break
+
+    all_savings = pd.DataFrame({'building': building_set, 'savings': savings_history})
+    all_savings.to_csv(savings_path, index=False)
+    
+def stepwise_selection_no_context(retrofits_df, retrofit_column, savings_path):
+    df = retrofits_df.copy()
+    df = df.filter(regex='(^kwh_|apn)').groupby('apn').agg('sum').reset_index()
+    df.sort_values(retrofit_column, inplace=True)
+    
+    baseline_energy = sum(df['kwh_baseline'])
+    
+    savings = []
+    for apn in df['apn'].unique():
+        other = sum(df[df['apn'] != apn]['kwh_baseline'])
+        retrofit_energy = other + df[df['apn'] == apn][retrofit_column]
+        saving = 100 * (retrofit_energy / baseline_energy - 1)
+        savings.append(float(saving))
+
+    all_savings = pd.DataFrame({'building': 'kwh_sim_' + df['apn'].unique(), 'savings': savings})
+    all_savings.sort_values('savings', inplace=True)
+    all_savings.query('savings < 0', inplace=True)
+    all_savings.to_csv(savings_path, index=False)
+    
+def plot_stepwise_history(stepwise_history, elbow, retrofit):
+    plt.title("% Change in Urban Energy Use - " + retrofit + " Retrofit")
+    plt.xlabel("# of Retrofitted Buildings")
+    plt.ylabel("% Change")
+    plt.plot(range(1, 1 + len(stepwise_history)), np.array(stepwise_history['savings']), '-o')
+#     plt.xlim([0, 25])
+#     plt.ylim([-3, 0])
+    plt.show()
+    plt.title("Cumulative % Change in Urban Energy Use - " + retrofit + " Retrofit")
+    plt.xlabel("# of Retrofitted Buildings")
+    plt.ylabel("% Change")
+    plt.axvline(elbow, color='0', linestyle='--')
+    plt.plot(range(1, 1 + len(stepwise_history)), np.cumsum(stepwise_history['savings']), '-o')
+#     plt.xlim([0, 25])
+#     plt.ylim([-14, 0])
+    plt.show()

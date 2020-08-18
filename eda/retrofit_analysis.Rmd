@@ -31,8 +31,10 @@ retrofit_block_no_context_csv <-
 retrofit_old_no_context_csv <- 
   here::here('data/output_retrofit/no_context/output_retrofit_old.csv')
 
-retrofit_all_mae_csv <-
-  here::here('data/output_retrofit/all_months/output_retrofit_all_mae.csv')
+# retrofit_all_mae_csv <-
+#   here::here('data/output_retrofit/all_months/output_retrofit_all_mae.csv')
+retrofit_all_mae_csv <- 
+  here::here('data/test.csv')
 retrofit_block_mae_csv <- 
   here::here('data/output_retrofit/all_months/output_retrofit_block_mae.csv')
 retrofit_old_mae_csv <- 
@@ -304,7 +306,7 @@ retrofit_all_mae %>%
   ) %>% 
   glimpse()
 
-retrofit_all_mae_no_context %>% 
+retrofit_all_mae %>% 
   summarize(
     building_hourly = grouped_mape(., apn, year, month, day, hour),
     building_daily = grouped_mape(., apn, year, month, day),
