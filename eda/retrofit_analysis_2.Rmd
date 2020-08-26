@@ -6,12 +6,17 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
+library(lubridate)
 library(readxl)
+library(ggridges)
+
+knitr::opts_chunk$set(dpi = 150, fig.width = 6, fig.height = 4)
 ```
 
 ```{r}
 building_info_xlsx <- 'D:/SMUD/due-s_organizing.xlsx'
 distances_csv <- 'D:/SMUD/smud_distances.csv'
+co2_gen_csv <- 'D:/SMUD/Generation-AVG-EMIT-isorto-byMonthTOD.csv'
 
 e_actual_stationary_csv <-
   here::here('data/building_energy_actual_stationary.csv')
@@ -29,6 +34,23 @@ PATH_LIGHT_NO_CONTEXT_SAVINGS_HISTORY <-
   here::here('savings_analysis/light_savings_no_context.csv')
 PATH_WINDOW_NO_CONTEXT_SAVINGS_HISTORY <- 
   here::here('savings_analysis/window_savings_no_context.csv')
+
+path_delta_by_building <- 
+  here::here('savings_analysis/delta_by_building.csv')
+
+retrofit_all_mae_csv <- 
+  here::here('data/output_retrofit/all_months/output_retrofit_all_mae.csv')
+retrofit_block_mae_csv <- 
+  here::here('data/output_retrofit/all_months/output_retrofit_block_mae.csv')
+retrofit_old_mae_csv <- 
+  here::here('data/output_retrofit/all_months/output_retrofit_old_mae.csv')
+
+retrofit_all_mae_no_context_csv <-
+  here::here('data/output_retrofit/all_months/no_context/output_retrofit_all_mae.csv')
+retrofit_block_mae_no_context_csv <- 
+  here::here('data/output_retrofit/all_months/no_context/output_retrofit_block_mae.csv')
+retrofit_old_mae_no_context_csv <- 
+  here::here('data/output_retrofit/all_months/no_context/output_retrofit_old_mae.csv')
 ```
 
 ```{r}
@@ -74,6 +96,14 @@ distances <-
     values_to = "distance"
   )
 
+delta_by_building <- 
+  path_delta_by_building %>% 
+  read_csv()
+
+co2_gen <- 
+  co2_gen_csv %>% 
+  read_csv()
+
 e_actual_means <- 
   e_actual_stationary_csv %>% 
   read_csv() %>% 
@@ -102,6 +132,26 @@ window <-
 
 window_nc <- 
   PATH_WINDOW_NO_CONTEXT_SAVINGS_HISTORY %>% 
+  read_csv()
+
+retrofit_all_mae <- 
+  retrofit_all_mae_csv %>% 
+  read_csv()
+retrofit_block_mae <- 
+  retrofit_block_mae_csv %>% 
+  read_csv()
+retrofit_old_mae <- 
+  retrofit_old_mae_csv %>% 
+  read_csv()
+
+retrofit_all_mae_no_context <- 
+  retrofit_all_mae_no_context_csv %>% 
+  read_csv()
+retrofit_block_mae_no_context <- 
+  retrofit_block_mae_no_context_csv %>% 
+  read_csv()
+retrofit_old_mae_no_context <- 
+  retrofit_old_mae_no_context_csv %>% 
   read_csv()
 ```
 
@@ -141,80 +191,425 @@ window_nc_building <-
   mutate(building = str_remove(building, "kwh_sim_")) %>% 
   left_join(e_actual_means, by = c('building' = 'apn')) %>% 
   left_join(buildings, by = c('building' = 'apn'))
-
-full_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Full Retrofit, With Context")
-
-full_nc_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Full Retrofit, No Context")
-
-light_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Light Retrofit, With Context")
-
-light_nc_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Light Retrofit, No Context")
-
-window_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Window Retrofit, With Context")
-
-window_nc_building %>% 
-  ggplot(aes(mean_kwh, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Window Retrofit, No Context")
 ```
 
 ```{r}
-full_building %>% 
-  left_join(distances, by = c('building' = 'apn')) %>% 
-  group_by(building, savings, primary_use) %>% 
-  summarize(mean_distance = mean(distance)) %>% 
-  ggplot(aes(mean_distance, savings)) +
-  geom_point(aes(color = primary_use)) +
-  labs(title = "Full Retrofit, With Context")
 
-full_nc_building %>% 
-  left_join(distances, by = c('building' = 'apn')) %>% 
-  group_by(building, savings) %>% 
-  summarize(mean_distance = mean(distance)) %>% 
-  ggplot(aes(mean_distance, savings)) +
+full %>% 
+  filter(savings < 0) %>% 
+  arrange(savings) %>% 
+  mutate(
+    savings = cumsum(savings) / sum(savings),
+    rank = rank(savings),
+    retrofit = "Full Retrofit"
+  ) %>% 
+  rbind(
+    window %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "Window Retrofit"
+      )
+  ) %>% 
+  rbind(
+    light %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "Light Retrofit"
+      )
+  ) %>% 
+  ggplot(aes(rank, savings, color = retrofit)) +
+  geom_hline(aes(yintercept = 0.8), color = 'red', size = 1) +
+  geom_line() + 
   geom_point() +
-  labs(title = "Full Retrofit, No Context")
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  labs(
+    title = "Cumulative Prop. of Max Energy Savings per \nOptimal Building Retrofitted",
+    subtitle = ">80% of savings with 6 buildings retrofitted",
+    x = "# Buildings Retrofitted",
+    y = "Cumulative Proportion of Best-Case Energy Savings",
+    color = NULL
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
 ```
 
-```{r}
-common <- 
-  c('00603700370000', '00601450250000', '00601530150000')
-
-full_building %>% 
-  left_join(distances, by = c('building' = 'apn')) %>% 
-  group_by_at(vars(-distance, -apn_2)) %>% 
-  summarize(mean_distance = mean(distance)) %>%
-  summary
-
-full_building %>% 
-  left_join(distances, by = c('building' = 'apn')) %>% 
-  group_by_at(vars(-distance, -apn_2)) %>% 
-  summarize(mean_distance = mean(distance)) %>% 
-  filter(building %in% common) %>% 
-  write_csv('temp.csv')
-
-full_building
-full_nc_building
-
-light_building
-light_nc_building
-
-window_building
-window_nc_building
-```
+# full_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Full Retrofit, With Context")
+# 
+# full_nc_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Full Retrofit, No Context")
+# 
+# light_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Light Retrofit, With Context")
+# 
+# light_nc_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Light Retrofit, No Context")
+# 
+# window_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Window Retrofit, With Context")
+# 
+# window_nc_building %>% 
+#   ggplot(aes(mean_kwh, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Window Retrofit, No Context")
+# ```
+# 
+# ```{r}
+# full_building %>% 
+#   left_join(distances, by = c('building' = 'apn')) %>% 
+#   group_by(building, savings, primary_use) %>% 
+#   summarize(mean_distance = mean(distance)) %>% 
+#   ggplot(aes(mean_distance, savings)) +
+#   geom_point(aes(color = primary_use)) +
+#   labs(title = "Full Retrofit, With Context")
+# 
+# full_nc_building %>% 
+#   left_join(distances, by = c('building' = 'apn')) %>% 
+#   group_by(building, savings) %>% 
+#   summarize(mean_distance = mean(distance)) %>% 
+#   ggplot(aes(mean_distance, savings)) +
+#   geom_point() +
+#   labs(title = "Full Retrofit, No Context")
+# ```
+# 
+# ```{r}
+# common <- 
+#   c('00603700370000', '00601450250000', '00601530150000')
+# 
+# full_building %>% 
+#   left_join(distances, by = c('building' = 'apn')) %>% 
+#   group_by_at(vars(-distance, -apn_2)) %>% 
+#   summarize(mean_distance = mean(distance)) %>%
+#   summary
+# 
+# full_building %>% 
+#   left_join(distances, by = c('building' = 'apn')) %>% 
+#   group_by_at(vars(-distance, -apn_2)) %>% 
+#   summarize(mean_distance = mean(distance)) %>% 
+#   filter(building %in% common) %>% 
+#   write_csv('temp.csv')
+# 
+# full_building
+# full_nc_building
+# 
+# light_building
+# light_nc_building
+# 
+# window_building
+# window_nc_building
+# ```
+# 
+# ```{r}
+# full_building %>% 
+#   top_n(6, desc(savings)) %>% 
+#   pull(ground_floor) %>% 
+#   sum()
+# 
+# full_nc_building %>% 
+#   top_n(6, desc(savings)) %>% 
+#   pull(ground_floor) %>% 
+#   sum()
+# ```
+# 
+# ```{r}
+# kwh_co2 <- 
+#   retrofit_all_mae %>% 
+#   left_join(co2_gen, by = c("year", "month", "hour")) %>% 
+#   rename_all(~ str_to_lower(.) %>% str_replace("/", "_")) %>%
+#   mutate_at(
+#     vars(kwh_actual, kwh_baseline, kwh_full, kwh_light, kwh_window), 
+#     .funs = list(co2 = ~ . * kgco2_kwh)
+#   ) %>% 
+#   rename_at(
+#     vars(ends_with("_co2")), 
+#     ~ str_remove(., "_co2") %>% str_remove(., "kwh_") %>% str_c("co2_", .)
+#   ) %>% 
+#   select(apn, year, month, day, hour, starts_with("kwh_"), starts_with("co2")) %>% 
+#   mutate(
+#     datetime = make_datetime(year, month, day, hour),
+#     month = month(datetime)
+#   ) %>% 
+#   group_by(month) %>% 
+#   summarize_at(vars(starts_with("kwh_"), starts_with("co2_")), mean) %>% 
+#   pivot_longer(
+#     cols = starts_with("kwh_"),
+#     values_to = "kwh",
+#     names_to = "retrofit",
+#     names_prefix = "kwh_"
+#   ) %>% 
+#   pivot_longer(
+#     cols = starts_with("co2_"),
+#     values_to = "co2",
+#     names_to = "retrofit_co2",
+#     names_prefix = "co2_"
+#   ) %>% 
+#   filter(retrofit == retrofit_co2) %>% 
+#   select(-retrofit_co2)
+# 
+# kwh_co2 %>% 
+#   ggplot(aes(month, kwh, color = retrofit)) +
+#   geom_line()
+# 
+# kwh_co2 %>% 
+#   ggplot(aes(month, co2, color = retrofit)) +
+#   geom_line()
+# 
+# retrofit_all_mae %>% 
+#   mutate(month = lubridate::month(month, label = TRUE)) %>% 
+#   group_by(month) %>% 
+#   mutate_at(
+#     vars(kwh_full, kwh_light, kwh_window),
+#     ~ 100 * (. / kwh_baseline - 1)
+#   )
+# 
+# retrofit_all_mae %>% 
+#   mutate(month = lubridate::month(month, label = TRUE)) %>% 
+#   group_by(month) %>% 
+#   mutate_at(
+#     vars(kwh_full, kwh_light, kwh_window),
+#     ~ 100 * (. / kwh_baseline - 1)
+#   ) %>% 
+#   ggplot(aes(x = -kwh_full, y = fct_rev(month), fill = stat(x))) +
+#   geom_density_ridges_gradient(
+#     scale = 3,
+#     from = -20,
+#     to = 60,
+#     quantile_lines = TRUE,
+#     quantiles = 2
+#   ) +
+#   scale_fill_gradientn(
+#     colors = c("black", "white", "#2ca25f", "#2ca25f"),
+#     values = c(0, 0.25, 0.7, 1)
+#   ) +
+#   labs(
+#     title = "Predicted % Energy Savings",
+#     subtitle = "Most energy savings occur in the summer, more moderate than simulations suggest",
+#     x = "% Energy Use Reduction",
+#     y = "Month",
+#     fill = "% Reduction in Energy Use",
+#     caption = "Source: Sacramento Municipal Utility District"
+#   )
+# ```
+# 
+# ```{r fig.height=8}
+# delta_by_building %>% 
+#   group_by(apn) %>% 
+#   mutate(
+#     retrofitted = str_remove(retrofitted, "kwh_sim_"),
+#     rank = rank(percent_delta)
+#   ) %>% 
+#   filter(apn != retrofitted) %>% 
+#   group_by(retrofitted) %>% 
+#   summarize(rank = mean(rank)) %>%
+#   arrange(rank) %>% 
+#   left_join(
+#     delta_by_building %>% 
+#       group_by(apn) %>% 
+#       mutate(
+#         retrofitted = str_remove(retrofitted, "kwh_sim_"),
+#         rank = rank(percent_delta)
+#       ) %>% 
+#       filter(apn != retrofitted) %>% 
+#       summarize(percent_delta = mean(percent_delta)) %>% 
+#       arrange(desc(percent_delta)),
+#     by = c("retrofitted" = "apn")
+#   ) %>% 
+#   ggplot(aes(rank, percent_delta)) +
+#   geom_point()
+# ```
+# 
+# ```{r}
+# # Retrofit 6 buildings to get 80% of the savings
+# 
+# full %>% 
+#   filter(savings < 0) %>% 
+#   arrange(savings) %>% 
+#   mutate(
+#     savings = cumsum(savings) / sum(savings),
+#     rank = rank(savings),
+#     retrofit = "Full Retrofit"
+#   ) %>% 
+#   rbind(
+#     window %>% 
+#       filter(savings < 0) %>% 
+#       mutate(
+#         savings = cumsum(savings) / sum(savings),
+#         rank = rank(savings),
+#         retrofit = "Window Retrofit"
+#       )
+#   ) %>% 
+#   rbind(
+#     light %>% 
+#       filter(savings < 0) %>% 
+#       mutate(
+#         savings = cumsum(savings) / sum(savings),
+#         rank = rank(savings),
+#         retrofit = "Light Retrofit"
+#       )
+#   ) %>% 
+#   ggplot(aes(rank, savings, color = retrofit)) +
+#   geom_hline(aes(yintercept = 0.8), color = 'red', size = 1) +
+#   geom_line() + 
+#   geom_point() +
+#   scale_x_continuous(breaks = scales::breaks_width(1)) +
+#   labs(
+#     title = "Cumulative Prop. of Best-Case Energy Savings per Optimal Building Retrofitted",
+#     subtitle = ">80% of savings with 6 buildings retrofitted",
+#     x = "# Buildings Retrofitted",
+#     y = "Cumulative Proportion of Best-Case Energy Savings",
+#     color = NULL
+#   ) +
+#   theme(
+#     legend.position = "bottom"
+#   )
+#   
+#   
+# full_building %>% 
+#   filter(savings < 0) %>% 
+#   arrange(savings) %>% 
+#   mutate(
+#     savings = cumsum(savings) / sum(savings),
+#     rank = rank(savings),
+#     ground_floor = cumsum(ground_floor),
+#     context = "W/ Context"
+#   ) %>% 
+#   rbind(
+#     full_nc_building %>% 
+#       filter(savings < 0) %>% 
+#       arrange(savings) %>% 
+#       mutate(
+#         savings = cumsum(savings) / sum(savings),
+#         rank = rank(savings),
+#         ground_floor = cumsum(ground_floor),
+#         context = "No Context"
+#       )
+#   ) %>% 
+#   ggplot(aes(rank, ground_floor, color = context)) +
+#   geom_line() +
+#   geom_point() +
+#   labs(
+#     title = "# Buildings Retrofitted vs. Cumulative Square Footage",
+#     x = "# Buildings Retrofitted",
+#     y = "Cumulative Square Footage",
+#     color = NULL
+#   )
+# 
+# full_building %>% 
+#   filter(savings < 0) %>% 
+#   arrange(savings) %>% 
+#   mutate(
+#     savings = cumsum(savings) / sum(savings),
+#     rank = rank(savings),
+#     ground_floor = cumsum(mean_kwh),
+#     context = "W/ Context"
+#   ) %>% 
+#   rbind(
+#     full_nc_building %>% 
+#       filter(savings < 0) %>% 
+#       arrange(savings) %>% 
+#       mutate(
+#         savings = cumsum(savings) / sum(savings),
+#         rank = rank(savings),
+#         ground_floor = cumsum(mean_kwh),
+#         context = "No Context"
+#       )
+#   ) %>% 
+#   ggplot(aes(rank, ground_floor, color = context)) +
+#   geom_line() +
+#   geom_point() +
+#   labs(
+#     title = "# Buildings Retrofitted vs. Cumulative Mean Energy Usage",
+#     x = "# Buildings Retrofitted",
+#     y = "Cumulative Energy Usage (kWh)",
+#     color = NULL
+#   )
+# 
+# retrofit_all_mae %>% 
+#   group_by(apn) %>% 
+#   summarize(
+#     variance = var(kwh_actual)
+#   ) %>% 
+#   left_join(
+#     delta_by_building %>% 
+#       group_by(apn) %>% 
+#       mutate(
+#         retrofitted = str_remove(retrofitted, "kwh_sim_"),
+#         rank = rank(percent_delta)
+#       ) %>% 
+#       filter(apn != retrofitted) %>% 
+#       group_by(retrofitted) %>% 
+#       summarize(rank = mean(rank)) %>%
+#       arrange(rank) %>% 
+#       left_join(
+#         delta_by_building %>% 
+#           group_by(apn) %>% 
+#           mutate(
+#             retrofitted = str_remove(retrofitted, "kwh_sim_"),
+#             rank = rank(percent_delta)
+#           ) %>% 
+#           filter(apn != retrofitted) %>% 
+#           summarize(percent_delta = mean(percent_delta)) %>% 
+#           arrange(desc(percent_delta)),
+#         by = c("retrofitted" = "apn")
+#       ),
+#     by = c("apn" = "retrofitted")
+#   ) %>% 
+#   ggplot(aes(rank, variance)) +
+#   geom_point()
+# 
+# get_building_cor <- function(b1, b2) {
+#   v1 <- 
+#     retrofit_all_mae %>% 
+#     filter(apn == b1) %>% 
+#     pull(kwh_actual)
+#   
+#   v2 <- 
+#     retrofit_all_mae %>% 
+#     filter(apn == b2) %>% 
+#     pull(kwh_actual)
+#   
+#   cor(v1, v2)
+# }
+# 
+# correlation <- 
+#   retrofit_all_mae %>% 
+#   distinct(apn) %>% 
+#   pull(apn) %>% 
+#   list(apn = ., retrofitted = .) %>% 
+#   cross_df %>% 
+#   mutate(
+#     cor = map2(apn, retrofitted, ~ get_building_cor(.x, .y)) %>% unlist()
+#   ) %>% 
+#   left_join(
+#     delta_by_building %>% 
+#       group_by(apn) %>% 
+#       mutate(
+#         retrofitted = str_remove(retrofitted, "kwh_sim_"),
+#         rank = rank(percent_delta)
+#       ) 
+#   )
+# 
+# correlation %>% 
+#   group_by(retrofitted) %>% 
+#   summarize(cor = mean(cor), rank = mean(rank)) %>% 
+#   ggplot(aes(cor, rank)) +
+#   geom_point()
+# 
+# ## Maybe change to CO2.
+# ```
 

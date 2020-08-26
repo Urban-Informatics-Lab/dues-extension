@@ -10,7 +10,7 @@ library(lubridate)
 library(readxl)
 library(ggridges)
 
-knitr::opts_chunk$set(dpi = 150, fig.width = 7)
+knitr::opts_chunk$set(dpi = 150, fig.width = 6, fig.height = 4)
 ```
 
 ## Data Input
@@ -31,10 +31,10 @@ retrofit_block_no_context_csv <-
 retrofit_old_no_context_csv <- 
   here::here('data/output_retrofit/no_context/output_retrofit_old.csv')
 
-# retrofit_all_mae_csv <-
-#   here::here('data/output_retrofit/all_months/output_retrofit_all_mae.csv')
-retrofit_all_mae_csv <- 
-  here::here('data/test.csv')
+retrofit_all_mae_csv <-
+  here::here('data/output_retrofit/all_months/output_retrofit_all_mae.csv')
+# retrofit_all_mae_csv <- 
+#   here::here('data/test.csv')
 retrofit_block_mae_csv <- 
   here::here('data/output_retrofit/all_months/output_retrofit_block_mae.csv')
 retrofit_old_mae_csv <- 
@@ -266,382 +266,52 @@ old_apn <-
 
 ## Plots
 
-### Prediction accuracy, multiple spatiotemporal scales, by building type
+```{r fig.height=4}
+mape <- function(y_hat, y) { 
+  mean(abs(100 * (y_hat / y - 1))) 
+} 
 
-```{r}
-mape <- function(y_hat, y) {
-  mean(abs(100 * (y_hat / y - 1)))
+grouped_mape <- function(df, ...) { 
+  df %>%  
+    group_by(...) %>%  
+    summarize_at(vars(kwh_baseline, kwh_actual), sum) %>%  
+    ungroup() %>% 
+    summarize( 
+      mean = mape(kwh_baseline, kwh_actual) 
+    ) %>%  
+    pull(mean) 
 }
 
-grouped_mape <- function(df, ...) {
-  df %>% 
-    group_by(...) %>% 
-    summarize_at(vars(kwh_baseline, kwh_actual), sum) %>% 
-    ungroup() %>%
-    summarize(
-      mean = mape(kwh_baseline, kwh_actual)
-    ) %>% 
-    pull(mean)
-}
-
-retrofit_all_mae_no_context %>% 
-  summarize(
-    building_hourly = grouped_mape(., apn, year, month, day, hour),
-    building_daily = grouped_mape(., apn, year, month, day),
-    building_monthly = grouped_mape(., apn, year, month),
-    urban_hourly = grouped_mape(., year, month, day, hour),
-    urban_daily = grouped_mape(., year, month, day),
-    urban_monthly = grouped_mape(., year, month)
-  ) %>% 
-  glimpse()
-
 retrofit_all_mae %>% 
-  summarize(
-    building_hourly = grouped_mape(., apn, year, month, day, hour),
-    building_daily = grouped_mape(., apn, year, month, day),
-    building_monthly = grouped_mape(., apn, year, month),
-    urban_hourly = grouped_mape(., year, month, day, hour),
-    urban_daily = grouped_mape(., year, month, day),
-    urban_monthly = grouped_mape(., year, month)
+  mutate(month = lubridate::month(month, label = TRUE)) %>% 
+  group_by(month) %>% 
+  mutate_at(
+    vars(kwh_full, kwh_light, kwh_window),
+    ~ 100 * (. / kwh_baseline - 1)
   ) %>% 
-  glimpse()
-
-retrofit_all_mae %>% 
-  summarize(
-    building_hourly = grouped_mape(., apn, year, month, day, hour),
-    building_daily = grouped_mape(., apn, year, month, day),
-    building_monthly = grouped_mape(., apn, year, month),
-    urban_hourly = grouped_mape(., year, month, day, hour),
-    urban_daily = grouped_mape(., year, month, day),
-    urban_monthly = grouped_mape(., year, month)
-  ) %>% 
-  pivot_longer(
-    cols = everything(),
-    names_to = c("spatial", "temporal"),
-    names_sep = "_",
-    values_to = "mape"
-  ) %>% 
-  mutate(
-    temporal = 
-      str_to_title(temporal) %>% 
-      factor(levels = c("Hourly", "Daily", "Monthly")),
-    spatial = 
-      spatial %>% str_to_title()
-  ) %>% 
-  ggplot(aes(temporal, spatial)) +
-  geom_point(aes(size = mape), color = "#9ecae1") +
-  geom_text(aes(label = mape %>% round(digits = 2))) +
-  scale_size_continuous(range = c(15, 30)) +
-  guides(size = FALSE) +
+  ggplot(aes(x = -kwh_full, y = fct_rev(month), fill = stat(x))) +
+  geom_density_ridges_gradient(
+    scale = 3,
+    from = -20,
+    to = 60,
+    quantile_lines = TRUE,
+    quantiles = 2
+  ) +
+  scale_fill_gradientn(
+    colors = c("black", "white", "#2ca25f", "#2ca25f"),
+    values = c(0, 0.25, 0.7, 1)
+  ) +
   labs(
-    title = "% Error Across Spatiotemporal Scales",
-    subtitle = "Error decreases monotonically as granularity decreases",
-    x = "Temporal Granularity",
-    y = "Spatial Granularity",
-    caption = "Source: Sacramento Municipal Utility District"
+    title = "Predicted % Energy Savings",
+    subtitle = "Most energy savings occur in the summer, \nmore moderate than simulations suggest",
+    x = "% Energy Use Reduction",
+    y = "Month",
+    fill = "% Reduction \nin Energy Use"
   )
 ```
+
 
 ```{r}
-positive <- 
-  retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>% 
-  top_n(2, wt = percent_change_full) %>% 
-  pull(apn)
-
-sim_baseline %>% 
-  filter(apn %in% positive) %>%
-  mutate(datetime = make_datetime(year, month, day, hour)) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh_baseline)) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Original Simulations for Buildings with Increase in Energy Use",
-    subtitle = "Actual irregularities not reflected in simulation data",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-retrofit_all_mae %>%
-  filter(apn %in% positive) %>%
-  transmute(
-    apn,
-    datetime = make_datetime(year, month, day, hour),
-    kwh = 100 * (kwh_full / kwh_baseline - 1),
-    data = if_else(kwh >= 0, "positive change", "negative change"),
-    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
-  ) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) +
-  geom_segment(alpha = 0.5) +
-  geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  scale_x_datetime(date_labels = "%b") +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  labs(
-    title = "% Change for Buildings with Increase in Energy Use",
-    subtitle = "Generally low-energy buildings, with irregular energy use patterns in 2018",
-    x = NULL,
-    y = "% Change from Baseline",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-negative <- 
-  retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>% 
-  top_n(2, wt = desc(percent_change_full)) %>% 
-  pull(apn)
-
-sim_baseline %>% 
-  filter(apn %in% negative) %>%
-  mutate(datetime = make_datetime(year, month, day, hour)) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh_baseline)) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Original Simulations for Buildings with Increase in Energy Use",
-    subtitle = "Greater variation in simulation data compared to buildings with predicted increase",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-retrofit_all_mae %>%
-  filter(apn %in% negative) %>%
-  transmute(
-    apn,
-    datetime = make_datetime(year, month, day, hour),
-    kwh = 100 * (kwh_full / kwh_baseline - 1),
-    data = if_else(kwh >= 0, "positive change", "negative change"),
-    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
-  ) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) +
-  geom_segment(alpha = 0.5) +
-  geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  scale_x_datetime(date_labels = "%b") +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  labs(
-    title = "% Change for Buildings with Decrease in Energy Use",
-    subtitle = "Dramatic reductions compared to buildings with increase",
-    x = NULL,
-    y = "% Change from Baseline",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-retrofit_all_mae %>%
-  filter(apn %in% positive) %>%
-  group_by(apn, hour) %>% 
-  summarize(
-    kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean
-  ) %>% 
-  mutate(
-    data = if_else(kwh < 0, "negative change", "positive change"),
-    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
-  ) %>% 
-  left_join(buildings, by = 'apn') %>%
-  ggplot(aes(hour, kwh, fill = data)) +
-  geom_col() +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  labs(
-    title = "% Change for Buildings with Increase in Energy Use",
-    subtitle = "Most deviation early and late in day",
-    x = "Hour",
-    y = "% Change from Baseline",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-retrofit_all_mae %>%
-  filter(apn %in% negative) %>%
-  group_by(apn, hour) %>% 
-  summarize(
-    kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean
-  ) %>% 
-  mutate(
-    data = if_else(kwh < 0, "negative change", "positive change"),
-    data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change"))
-  ) %>% 
-  left_join(buildings, by = 'apn') %>%
-  ggplot(aes(hour, kwh)) +
-  geom_col(fill = "turquoise3") +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  labs(
-    title = "% Change for Buildings with Decrease in Energy Use",
-    subtitle = "Most deviation early and late in day",
-    x = "Hour",
-    y = "% Change from Baseline",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
-
-```{r}
-top_mape <- 
-  retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    baseline_mape = mape(kwh_baseline, kwh_actual)
-  ) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  top_n(4, wt = baseline_mape) %>% 
-  pull(apn)
-
-sim_baseline %>% 
-  filter(apn %in% top_mape) %>% 
-  mutate(datetime = make_datetime(year, month, day, hour)) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh_baseline)) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Original Simulations for Buildings with Worst Error Rates",
-    subtitle = "Actual irregularities not reflected in simulation data",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-e_actual_stationary %>% 
-  filter(apn %in% top_mape) %>%
-  transmute(
-    apn,
-    datetime = make_datetime(year, month, day, hour),
-    kwh,
-    data = "actual",
-  ) %>% 
-  rbind(
-    retrofit_all_mae %>%
-      filter(apn %in% top_mape) %>%
-      transmute(
-        apn,
-        datetime = make_datetime(year, month, day, hour),
-        kwh = kwh_baseline,
-        data = "predicted"
-      )
-  ) %>%
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh, color = str_to_title(data))) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Predictions for Buildings with Worst Error Rates",
-    subtitle = "Generally low-energy buildings, with irregular energy use patterns in 2018",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-top_mape <- 
-  retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    baseline_mape = mape(kwh_baseline, kwh_actual)
-  ) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  top_n(4, wt = desc(baseline_mape)) %>% 
-  pull(apn)
-
-sim_baseline %>% 
-  filter(apn %in% top_mape) %>% 
-  mutate(datetime = make_datetime(year, month, day, hour)) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh_baseline)) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Original Simulations for Buildings with Best Error Rates",
-    subtitle = "Greater variation reflected in simulation data",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-
-e_actual_stationary %>% 
-  filter(apn %in% top_mape) %>%
-  transmute(
-    apn,
-    datetime = make_datetime(year, month, day, hour),
-    kwh,
-    data = "actual",
-  ) %>% 
-  rbind(
-    retrofit_all_mae %>%
-      filter(apn %in% top_mape) %>%
-      transmute(
-        apn,
-        datetime = make_datetime(year, month, day, hour),
-        kwh = kwh_baseline,
-        data = "predicted"
-      )
-  ) %>%
-  left_join(buildings, by = 'apn') %>% 
-  ggplot(aes(datetime, kwh, color = str_to_title(data))) +
-  geom_line(alpha = 0.5) +
-  facet_wrap(~ str_to_title(street), scales = "free") +
-  labs(
-    title = "Predictions for Buildings with Best Error Rates",
-    subtitle = "Good performance on both high and low energy use buildings",
-    x = NULL,
-    y = "Energy Consumption (kWh)",
-    color = "Energy Consumption",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
-
-```{r}
-retrofit_all_mae %>% 
-  left_join(buildings, by = 'apn') %>%
-  group_by(primary_use, year, month) %>% 
-  summarize(
-    mean_kwh_actual = mean(kwh_actual),
-    baseline_mape = mape(kwh_baseline, kwh_actual)
-  ) %>% 
-  ungroup() %>% 
-  mutate(
-    month = lubridate::month(month, label = TRUE),
-    primary_use = fct_reorder(primary_use, desc(baseline_mape))
-  ) %>% 
-  ggplot(aes(month, baseline_mape, color = primary_use, group = primary_use)) +
-  geom_line() +
-  geom_point() +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  labs(
-    title = "Monthly % Error by Building Type",
-    subtitle = "Retail buildings most error prone",
-    x = "Month",
-    y = "Mean Absolute Percent Error",
-    color = "Building Type",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
-
-```{r fig.height=6}
 retrofit_all_mae %>% 
   left_join(
     buildings %>% 
@@ -669,7 +339,7 @@ retrofit_all_mae %>%
         order(order(desc(as.numeric(street_name)), desc(street_num)))
       )
   ) %>% 
-  ggplot(aes(month, street, fill = baseline_mape)) +
+  ggplot(aes(month, as.numeric(street), fill = baseline_mape)) +
   geom_tile() +
   scale_x_discrete(expand = expand_scale()) +
   scale_y_discrete(expand = expand_scale()) +
@@ -681,12 +351,11 @@ retrofit_all_mae %>%
     direction = 1
   ) +
   labs(
-    title = "Mean Absolute % Error for Each Building by Month",
+    title = "Monthly Mean Abs. % Error for Each Building",
     subtitle = "Clear differences in error across buildings and time",
     x = "Month",
-    y = NULL,
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
+    y = "Each Row is a Different Building",
+    fill = NULL
   ) +
   theme(
     legend.position = "bottom",
@@ -695,406 +364,835 @@ retrofit_all_mae %>%
   )
 ```
 
-```{r}
-retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    mean_kwh_actual = mean(kwh_actual),
-    baseline_mape = mape(kwh_baseline, kwh_actual)
-  ) %>% 
-  left_join(buildings, by = 'apn') %>% 
-  mutate(primary_use = fct_reorder(primary_use, desc(baseline_mape))) %>% 
-  ggplot(aes(mean_kwh_actual, baseline_mape, fill = primary_use)) +
-  geom_hline(aes(yintercept = mean(baseline_mape)), color = 'red', size = 1) +
-  geom_point(color = 'white', shape = 21, size = 2.5) +
-  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
-  geom_text(
-    aes(max(mean_kwh_actual), mean(baseline_mape), label = "Mean"), 
-    size = 3, 
-    nudge_y = 2
-  ) +
-  labs(
-    title = "Hourly prediction accuracy across building usage types",
-    subtitle = "Highest error for low-energy retail buildings",
-    x = "Mean Energy Usage (kWh)",
-    y = "Mean Absolute Percent Error",
-    fill = "Primary Use",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
+<!-- ### Prediction accuracy, multiple spatiotemporal scales, by building type -->
 
-## Retrofit analysis, where and when are most energy savings coming from?
+<!-- ```{r} -->
+<!-- mape <- function(y_hat, y) { -->
+<!--   mean(abs(100 * (y_hat / y - 1))) -->
+<!-- } -->
 
-```{r}
-sim_all %>% 
-  mutate(month = lubridate::month(month, label = TRUE)) %>% 
-  mutate_at(
-    vars(kwh_full_all, kwh_light_all, kwh_window_all),
-    ~ 100 * (. / kwh_baseline - 1)
-  ) %>% 
-  ggplot(aes(x = -kwh_full_all, y = fct_rev(month), fill = stat(x))) +
-  geom_density_ridges_gradient(
-    scale = 3,
-    from = -20,
-    to = 60,
-    quantile_lines = TRUE,
-    quantiles = 2
-  ) +
-  scale_fill_gradientn(
-    colors = c("black", "white", "#2ca25f", "#2ca25f"),
-    values = c(0, 0.25, 0.7, 1)
-  ) +
-  labs(
-    title = "Simulated % Energy Savings",
-    subtitle = "Significant energy savings projected year-round",
-    x = "% Energy Use Reduction",
-    y = "Month",
-    fill = "% Reduction in Energy Use",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- grouped_mape <- function(df, ...) { -->
+<!--   df %>%  -->
+<!--     group_by(...) %>%  -->
+<!--     summarize_at(vars(kwh_baseline, kwh_actual), sum) %>%  -->
+<!--     ungroup() %>% -->
+<!--     summarize( -->
+<!--       mean = mape(kwh_baseline, kwh_actual) -->
+<!--     ) %>%  -->
+<!--     pull(mean) -->
+<!-- } -->
 
-retrofit_all_mae %>% 
-  mutate(month = lubridate::month(month, label = TRUE)) %>% 
-  group_by(month) %>% 
-  mutate_at(
-    vars(kwh_full, kwh_light, kwh_window),
-    ~ 100 * (. / kwh_baseline - 1)
-  ) %>% 
-  ggplot(aes(x = -kwh_full, y = fct_rev(month), fill = stat(x))) +
-  geom_density_ridges_gradient(
-    scale = 3,
-    from = -20,
-    to = 60,
-    quantile_lines = TRUE,
-    quantiles = 2
-  ) +
-  scale_fill_gradientn(
-    colors = c("black", "white", "#2ca25f", "#2ca25f"),
-    values = c(0, 0.25, 0.7, 1)
-  ) +
-  labs(
-    title = "Predicted % Energy Savings",
-    subtitle = "Most energy savings occur in the summer, more moderate than simulations suggest",
-    x = "% Energy Use Reduction",
-    y = "Month",
-    fill = "% Reduction in Energy Use",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
+<!-- retrofit_all_mae_no_context %>%  -->
+<!--   summarize( -->
+<!--     building_hourly = grouped_mape(., apn, year, month, day, hour), -->
+<!--     building_daily = grouped_mape(., apn, year, month, day), -->
+<!--     building_monthly = grouped_mape(., apn, year, month), -->
+<!--     urban_hourly = grouped_mape(., year, month, day, hour), -->
+<!--     urban_daily = grouped_mape(., year, month, day), -->
+<!--     urban_monthly = grouped_mape(., year, month) -->
+<!--   ) %>%  -->
+<!--   glimpse() -->
 
-```{r}
-retrofit_all_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  ggplot(aes(kwh_actual, percent_change, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, fill = 'black', color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - All Buildings Retrofitted",
-    subtitle = "Most buildings predict negative change",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- retrofit_all_mae %>%  -->
+<!--   summarize( -->
+<!--     building_hourly = grouped_mape(., apn, year, month, day, hour), -->
+<!--     building_daily = grouped_mape(., apn, year, month, day), -->
+<!--     building_monthly = grouped_mape(., apn, year, month), -->
+<!--     urban_hourly = grouped_mape(., year, month, day, hour), -->
+<!--     urban_daily = grouped_mape(., year, month, day), -->
+<!--     urban_monthly = grouped_mape(., year, month) -->
+<!--   ) %>%  -->
+<!--   glimpse() -->
 
-retrofit_block_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  mutate(in_block = apn %in% block_apn) %>% 
-  ggplot(aes(kwh_actual, percent_change, fill = in_block, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  scale_fill_manual(labels = c("Not In Block", "In Block"), values = c("black", "red")) +
-  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - Block Retrofitted",
-    subtitle = "Most negative change for low energy use buildings",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- retrofit_all_mae %>%  -->
+<!--   summarize( -->
+<!--     building_hourly = grouped_mape(., apn, year, month, day, hour), -->
+<!--     building_daily = grouped_mape(., apn, year, month, day), -->
+<!--     building_monthly = grouped_mape(., apn, year, month), -->
+<!--     urban_hourly = grouped_mape(., year, month, day, hour), -->
+<!--     urban_daily = grouped_mape(., year, month, day), -->
+<!--     urban_monthly = grouped_mape(., year, month) -->
+<!--   ) %>%  -->
+<!--   pivot_longer( -->
+<!--     cols = everything(), -->
+<!--     names_to = c("spatial", "temporal"), -->
+<!--     names_sep = "_", -->
+<!--     values_to = "mape" -->
+<!--   ) %>%  -->
+<!--   mutate( -->
+<!--     temporal =  -->
+<!--       str_to_title(temporal) %>%  -->
+<!--       factor(levels = c("Hourly", "Daily", "Monthly")), -->
+<!--     spatial =  -->
+<!--       spatial %>% str_to_title() -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(temporal, spatial)) + -->
+<!--   geom_point(aes(size = mape), color = "#9ecae1") + -->
+<!--   geom_text(aes(label = mape %>% round(digits = 2))) + -->
+<!--   scale_size_continuous(range = c(15, 30)) + -->
+<!--   guides(size = FALSE) + -->
+<!--   labs( -->
+<!--     title = "% Error Across Spatiotemporal Scales", -->
+<!--     subtitle = "Error decreases monotonically as granularity decreases", -->
+<!--     x = "Temporal Granularity", -->
+<!--     y = "Spatial Granularity", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
 
-retrofit_old_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  mutate(in_old = apn %in% old_apn) %>% 
-  ggplot(aes(kwh_actual, percent_change, fill = in_old, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  scale_fill_manual(labels = c("Not Old", "Old"), values = c("black", "red")) +
-  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - Old Buildings Retrofitted",
-    subtitle = "Greatest deviation at low energy use",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
+<!-- ```{r} -->
+<!-- positive <-  -->
+<!--   retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>%  -->
+<!--   top_n(2, wt = percent_change_full) %>%  -->
+<!--   pull(apn) -->
 
-```{r}
-retrofit_all_mae_no_context %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  ggplot(aes(kwh_actual, percent_change, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, fill = 'black', color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - All Buildings Retrofitted",
-    subtitle = "Most buildings predict negative change",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- sim_baseline %>%  -->
+<!--   filter(apn %in% positive) %>% -->
+<!--   mutate(datetime = make_datetime(year, month, day, hour)) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh_baseline)) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Original Simulations for Buildings with Increase in Energy Use", -->
+<!--     subtitle = "Actual irregularities not reflected in simulation data", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
 
-retrofit_block_mae_no_context %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  mutate(in_block = apn %in% block_apn) %>% 
-  ggplot(aes(kwh_actual, percent_change, fill = in_block, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  scale_fill_manual(labels = c("Not In Block", "In Block"), values = c("black", "red")) +
-  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - Block Retrofitted",
-    subtitle = "Most negative change for low energy use buildings",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- retrofit_all_mae %>% -->
+<!--   filter(apn %in% positive) %>% -->
+<!--   transmute( -->
+<!--     apn, -->
+<!--     datetime = make_datetime(year, month, day, hour), -->
+<!--     kwh = 100 * (kwh_full / kwh_baseline - 1), -->
+<!--     data = if_else(kwh >= 0, "positive change", "negative change"), -->
+<!--     data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change")) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) + -->
+<!--   geom_segment(alpha = 0.5) + -->
+<!--   geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   scale_x_datetime(date_labels = "%b") + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   labs( -->
+<!--     title = "% Change for Buildings with Increase in Energy Use", -->
+<!--     subtitle = "Generally low-energy buildings, with irregular energy use patterns in 2018", -->
+<!--     x = NULL, -->
+<!--     y = "% Change from Baseline", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
 
-retrofit_old_mae_no_context %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
-  ) %>%
-  pivot_longer(
-    cols =  -c(apn, kwh_actual, baseline_mape),
-    names_to = "retrofit",
-    names_prefix = "percent_change_",
-    values_to = "percent_change"
-  ) %>% 
-  mutate(in_old = apn %in% old_apn) %>% 
-  ggplot(aes(kwh_actual, percent_change, fill = in_old, alpha = desc(baseline_mape))) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(shape = 21, color = 'white', size = 3) +
-  scale_alpha_continuous(
-    labels = scales::label_percent(scale = -1)
-  ) +
-  scale_fill_manual(labels = c("Not Old", "Old"), values = c("black", "red")) +
-  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
-  facet_wrap(~ str_to_title(retrofit)) +
-  labs(
-    title = "Median Hourly % Change and Energy Use - Old Buildings Retrofitted",
-    subtitle = "Greatest deviation at low energy use",
-    x = "Energy Consumption (kWh)",
-    y = "Median Hourly % Change",
-    alpha = "MAPE",
-    fill = NULL,
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
+<!-- negative <-  -->
+<!--   retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>%  -->
+<!--   top_n(2, wt = desc(percent_change_full)) %>%  -->
+<!--   pull(apn) -->
 
-## Urban context analysis, adjacent buildings
+<!-- sim_baseline %>%  -->
+<!--   filter(apn %in% negative) %>% -->
+<!--   mutate(datetime = make_datetime(year, month, day, hour)) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh_baseline)) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Original Simulations for Buildings with Increase in Energy Use", -->
+<!--     subtitle = "Greater variation in simulation data compared to buildings with predicted increase", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
 
-```{r}
-block_distances <- 
-  distances %>% 
-  filter(apn %in% all_apn, apn_2 %in% block_apn) %>% 
-  group_by(apn) %>% 
-  top_n(1, wt = desc(distance)) %>% 
-  select(-apn_2) %>% 
-  ungroup()
+<!-- retrofit_all_mae %>% -->
+<!--   filter(apn %in% negative) %>% -->
+<!--   transmute( -->
+<!--     apn, -->
+<!--     datetime = make_datetime(year, month, day, hour), -->
+<!--     kwh = 100 * (kwh_full / kwh_baseline - 1), -->
+<!--     data = if_else(kwh >= 0, "positive change", "negative change"), -->
+<!--     data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change")) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(x = datetime, xend = datetime, y = 0, yend = kwh, color = data)) + -->
+<!--   geom_segment(alpha = 0.5) + -->
+<!--   geom_hline(aes(yintercept = median(kwh)), color = "red", size = 1) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   scale_x_datetime(date_labels = "%b") + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   labs( -->
+<!--     title = "% Change for Buildings with Decrease in Energy Use", -->
+<!--     subtitle = "Dramatic reductions compared to buildings with increase", -->
+<!--     x = NULL, -->
+<!--     y = "% Change from Baseline", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
 
-retrofit_block_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median
-  ) %>% 
-  left_join(block_distances, by = "apn") %>% 
-  left_join(buildings, by = "apn") %>% 
-  arrange(desc(kwh_actual)) %>% 
-  mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>%
-  ggplot(aes(distance, percent_change_full)) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") +
-  scale_y_continuous(
-    labels = scales::label_percent(scale = 1)
-  ) +
-  labs(
-    title = "Median Hourly % Change vs. Distance from Nearest Building in Block",
-    subtitle = "Slight tendency for closer buildings to decrease energy use",
-    x = "Distance from Nearest Retrofitted Building (m)",
-    y = "Median Hourly % Change",
-    size = "Energy Consumption (kwh)",
-    fill = "Building Type",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- retrofit_all_mae %>% -->
+<!--   filter(apn %in% positive) %>% -->
+<!--   group_by(apn, hour) %>%  -->
+<!--   summarize( -->
+<!--     kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean -->
+<!--   ) %>%  -->
+<!--   mutate( -->
+<!--     data = if_else(kwh < 0, "negative change", "positive change"), -->
+<!--     data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change")) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>% -->
+<!--   ggplot(aes(hour, kwh, fill = data)) + -->
+<!--   geom_col() + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   labs( -->
+<!--     title = "% Change for Buildings with Increase in Energy Use", -->
+<!--     subtitle = "Most deviation early and late in day", -->
+<!--     x = "Hour", -->
+<!--     y = "% Change from Baseline", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
 
-retrofit_block_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median
-  ) %>% 
-  left_join(block_distances, by = "apn") %>% 
-  left_join(buildings, by = "apn") %>% 
-  arrange(desc(kwh_actual)) %>% 
-  mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>%
-  ggplot(aes(distance, percent_change_full)) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") +
-  scale_fill_manual(
-    breaks = c("Retail", "Office", "Apartment", "Warehouse"),
-    values = c("white", "#7CAE00", "white", "white")
-  ) +
-  scale_y_continuous(
-    labels = scales::label_percent(scale = 1)
-  ) +
-  labs(
-    title = "Median Hourly % Change vs. Distance from Nearest Building in Block",
-    subtitle = "Trend more clear for office buildings",
-    x = "Distance from Nearest Retrofitted Building (m)",
-    y = "Median Hourly % Change",
-    size = "Energy Consumption (kwh)",
-    fill = "Building Type",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
+<!-- retrofit_all_mae %>% -->
+<!--   filter(apn %in% negative) %>% -->
+<!--   group_by(apn, hour) %>%  -->
+<!--   summarize( -->
+<!--     kwh = 100 * (kwh_full / kwh_baseline - 1) %>% mean -->
+<!--   ) %>%  -->
+<!--   mutate( -->
+<!--     data = if_else(kwh < 0, "negative change", "positive change"), -->
+<!--     data = str_to_title(data) %>% factor(levels = c("Positive Change", "Negative Change")) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>% -->
+<!--   ggplot(aes(hour, kwh)) + -->
+<!--   geom_col(fill = "turquoise3") + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   labs( -->
+<!--     title = "% Change for Buildings with Decrease in Energy Use", -->
+<!--     subtitle = "Most deviation early and late in day", -->
+<!--     x = "Hour", -->
+<!--     y = "% Change from Baseline", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
 
-old_distances <- 
-  distances %>% 
-  filter(apn %in% all_apn, apn_2 %in% old_apn) %>% 
-  group_by(apn) %>% 
-  top_n(1, wt = desc(distance)) %>% 
-  select(-apn_2) %>% 
-  ungroup()
+<!-- ```{r} -->
+<!-- top_mape <-  -->
+<!--   retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   top_n(4, wt = baseline_mape) %>%  -->
+<!--   pull(apn) -->
 
-retrofit_old_mae %>% 
-  group_by(apn) %>% 
-  summarize(
-    kwh_actual = kwh_actual %>% median,
-    baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median
-  ) %>% 
-  left_join(old_distances, by = "apn") %>% 
-  left_join(buildings, by = "apn") %>% 
-  arrange(desc(kwh_actual)) %>% 
-  mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>%
-  ggplot(aes(distance, percent_change_full)) +
-  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
-  geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") +
-  scale_y_continuous(
-    labels = scales::label_percent(scale = 1)
-  ) +
-  labs(
-    title = "Median Hourly % Change vs. Distance from Nearest Retrofitted Old Building",
-    subtitle = "Buildings that show positive change are all retrofitted",
-    x = "Distance from Nearest Retrofitted Building (m)",
-    y = "Median Hourly % Change",
-    size = "Energy Consumption (kwh)",
-    fill = "Building Type",
-    caption = "Source: Sacramento Municipal Utility District"
-  )
-```
+<!-- sim_baseline %>%  -->
+<!--   filter(apn %in% top_mape) %>%  -->
+<!--   mutate(datetime = make_datetime(year, month, day, hour)) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh_baseline)) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Original Simulations for Buildings with Worst Error Rates", -->
+<!--     subtitle = "Actual irregularities not reflected in simulation data", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- e_actual_stationary %>%  -->
+<!--   filter(apn %in% top_mape) %>% -->
+<!--   transmute( -->
+<!--     apn, -->
+<!--     datetime = make_datetime(year, month, day, hour), -->
+<!--     kwh, -->
+<!--     data = "actual", -->
+<!--   ) %>%  -->
+<!--   rbind( -->
+<!--     retrofit_all_mae %>% -->
+<!--       filter(apn %in% top_mape) %>% -->
+<!--       transmute( -->
+<!--         apn, -->
+<!--         datetime = make_datetime(year, month, day, hour), -->
+<!--         kwh = kwh_baseline, -->
+<!--         data = "predicted" -->
+<!--       ) -->
+<!--   ) %>% -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh, color = str_to_title(data))) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Predictions for Buildings with Worst Error Rates", -->
+<!--     subtitle = "Generally low-energy buildings, with irregular energy use patterns in 2018", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- top_mape <-  -->
+<!--   retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   top_n(4, wt = desc(baseline_mape)) %>%  -->
+<!--   pull(apn) -->
+
+<!-- sim_baseline %>%  -->
+<!--   filter(apn %in% top_mape) %>%  -->
+<!--   mutate(datetime = make_datetime(year, month, day, hour)) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh_baseline)) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Original Simulations for Buildings with Best Error Rates", -->
+<!--     subtitle = "Greater variation reflected in simulation data", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- e_actual_stationary %>%  -->
+<!--   filter(apn %in% top_mape) %>% -->
+<!--   transmute( -->
+<!--     apn, -->
+<!--     datetime = make_datetime(year, month, day, hour), -->
+<!--     kwh, -->
+<!--     data = "actual", -->
+<!--   ) %>%  -->
+<!--   rbind( -->
+<!--     retrofit_all_mae %>% -->
+<!--       filter(apn %in% top_mape) %>% -->
+<!--       transmute( -->
+<!--         apn, -->
+<!--         datetime = make_datetime(year, month, day, hour), -->
+<!--         kwh = kwh_baseline, -->
+<!--         data = "predicted" -->
+<!--       ) -->
+<!--   ) %>% -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   ggplot(aes(datetime, kwh, color = str_to_title(data))) + -->
+<!--   geom_line(alpha = 0.5) + -->
+<!--   facet_wrap(~ str_to_title(street), scales = "free") + -->
+<!--   labs( -->
+<!--     title = "Predictions for Buildings with Best Error Rates", -->
+<!--     subtitle = "Good performance on both high and low energy use buildings", -->
+<!--     x = NULL, -->
+<!--     y = "Energy Consumption (kWh)", -->
+<!--     color = "Energy Consumption", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- retrofit_all_mae %>%  -->
+<!--   left_join(buildings, by = 'apn') %>% -->
+<!--   group_by(primary_use, year, month) %>%  -->
+<!--   summarize( -->
+<!--     mean_kwh_actual = mean(kwh_actual), -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual) -->
+<!--   ) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   mutate( -->
+<!--     month = lubridate::month(month, label = TRUE), -->
+<!--     primary_use = fct_reorder(primary_use, desc(baseline_mape)) -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(month, baseline_mape, color = primary_use, group = primary_use)) + -->
+<!--   geom_line() + -->
+<!--   geom_point() + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   labs( -->
+<!--     title = "Monthly % Error by Building Type", -->
+<!--     subtitle = "Retail buildings most error prone", -->
+<!--     x = "Month", -->
+<!--     y = "Mean Absolute Percent Error", -->
+<!--     color = "Building Type", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ```{r fig.height=6} -->
+<!-- retrofit_all_mae %>%  -->
+<!--   left_join( -->
+<!--     buildings %>%  -->
+<!--       mutate(street_hold = str_replace(street, " ", "\\*")) %>%  -->
+<!--       separate(street_hold, c("street_num", "street_name"), "\\*"),  -->
+<!--     by = 'apn' -->
+<!--   ) %>% -->
+<!--   mutate(street_num = as.integer(street_num)) %>%  -->
+<!--   group_by(street, street_num, street_name, year, month) %>%  -->
+<!--   summarize( -->
+<!--     mean_kwh_actual = mean(kwh_actual), -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual) -->
+<!--   ) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   mutate( -->
+<!--     month = lubridate::month(month, label = TRUE), -->
+<!--     # primary_use = fct_reorder(primary_use, desc(baseline_mape)) -->
+<!--   ) %>%  -->
+<!--   arrange(street_name, street_num) %>%  -->
+<!--   mutate( -->
+<!--     street_name = factor(street_name, levels = unique(street_name)), -->
+<!--     street =  -->
+<!--       fct_reorder( -->
+<!--         str_to_title(street),  -->
+<!--         order(order(desc(as.numeric(street_name)), desc(street_num))) -->
+<!--       ) -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(month, street, fill = baseline_mape)) + -->
+<!--   geom_tile() + -->
+<!--   scale_x_discrete(expand = expand_scale()) + -->
+<!--   scale_y_discrete(expand = expand_scale()) + -->
+<!--   scale_fill_distiller( -->
+<!--     palette = "YlOrRd", -->
+<!--     breaks = scales::breaks_width(25), -->
+<!--     limits = c(0, 125), -->
+<!--     labels = scales::label_percent(scale = 1), -->
+<!--     direction = 1 -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Mean Absolute % Error for Each Building by Month", -->
+<!--     subtitle = "Clear differences in error across buildings and time", -->
+<!--     x = "Month", -->
+<!--     y = NULL, -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) + -->
+<!--   theme( -->
+<!--     legend.position = "bottom", -->
+<!--     legend.key.height = unit(0.2, "line"), -->
+<!--     legend.key.width = unit(2, "line") -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     mean_kwh_actual = mean(kwh_actual), -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual) -->
+<!--   ) %>%  -->
+<!--   left_join(buildings, by = 'apn') %>%  -->
+<!--   mutate(primary_use = fct_reorder(primary_use, desc(baseline_mape))) %>%  -->
+<!--   ggplot(aes(mean_kwh_actual, baseline_mape, fill = primary_use)) + -->
+<!--   geom_hline(aes(yintercept = mean(baseline_mape)), color = 'red', size = 1) + -->
+<!--   geom_point(color = 'white', shape = 21, size = 2.5) + -->
+<!--   scale_y_continuous(labels = scales::label_percent(scale = 1)) + -->
+<!--   geom_text( -->
+<!--     aes(max(mean_kwh_actual), mean(baseline_mape), label = "Mean"),  -->
+<!--     size = 3,  -->
+<!--     nudge_y = 2 -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Hourly prediction accuracy across building usage types", -->
+<!--     subtitle = "Highest error for low-energy retail buildings", -->
+<!--     x = "Mean Energy Usage (kWh)", -->
+<!--     y = "Mean Absolute Percent Error", -->
+<!--     fill = "Primary Use", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ## Retrofit analysis, where and when are most energy savings coming from? -->
+
+<!-- ```{r} -->
+<!-- sim_all %>%  -->
+<!--   mutate(month = lubridate::month(month, label = TRUE)) %>%  -->
+<!--   mutate_at( -->
+<!--     vars(kwh_full_all, kwh_light_all, kwh_window_all), -->
+<!--     ~ 100 * (. / kwh_baseline - 1) -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(x = -kwh_full_all, y = fct_rev(month), fill = stat(x))) + -->
+<!--   geom_density_ridges_gradient( -->
+<!--     scale = 3, -->
+<!--     from = -20, -->
+<!--     to = 60, -->
+<!--     quantile_lines = TRUE, -->
+<!--     quantiles = 2 -->
+<!--   ) + -->
+<!--   scale_fill_gradientn( -->
+<!--     colors = c("black", "white", "#2ca25f", "#2ca25f"), -->
+<!--     values = c(0, 0.25, 0.7, 1) -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Simulated % Energy Savings", -->
+<!--     subtitle = "Significant energy savings projected year-round", -->
+<!--     x = "% Energy Use Reduction", -->
+<!--     y = "Month", -->
+<!--     fill = "% Reduction in Energy Use", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_all_mae %>%  -->
+<!--   mutate(month = lubridate::month(month, label = TRUE)) %>%  -->
+<!--   group_by(month) %>%  -->
+<!--   mutate_at( -->
+<!--     vars(kwh_full, kwh_light, kwh_window), -->
+<!--     ~ 100 * (. / kwh_baseline - 1) -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(x = -kwh_full, y = fct_rev(month), fill = stat(x))) + -->
+<!--   geom_density_ridges_gradient( -->
+<!--     scale = 3, -->
+<!--     from = -20, -->
+<!--     to = 60, -->
+<!--     quantile_lines = TRUE, -->
+<!--     quantiles = 2 -->
+<!--   ) + -->
+<!--   scale_fill_gradientn( -->
+<!--     colors = c("black", "white", "#2ca25f", "#2ca25f"), -->
+<!--     values = c(0, 0.25, 0.7, 1) -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Predicted % Energy Savings", -->
+<!--     subtitle = "Most energy savings occur in the summer, more moderate than simulations suggest", -->
+<!--     x = "% Energy Use Reduction", -->
+<!--     y = "Month", -->
+<!--     fill = "% Reduction \nin Energy Use", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- retrofit_all_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, fill = 'black', color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - All Buildings Retrofitted", -->
+<!--     subtitle = "Most buildings predict negative change", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_block_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   mutate(in_block = apn %in% block_apn) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, fill = in_block, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   scale_fill_manual(labels = c("Not In Block", "In Block"), values = c("black", "red")) + -->
+<!--   guides(alpha = guide_legend(override.aes = list(fill = "black"))) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - Block Retrofitted", -->
+<!--     subtitle = "Most negative change for low energy use buildings", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_old_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   mutate(in_old = apn %in% old_apn) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, fill = in_old, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   scale_fill_manual(labels = c("Not Old", "Old"), values = c("black", "red")) + -->
+<!--   guides(alpha = guide_legend(override.aes = list(fill = "black"))) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - Old Buildings Retrofitted", -->
+<!--     subtitle = "Greatest deviation at low energy use", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- retrofit_all_mae_no_context %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, fill = 'black', color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - All Buildings Retrofitted", -->
+<!--     subtitle = "Most buildings predict negative change", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_block_mae_no_context %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   mutate(in_block = apn %in% block_apn) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, fill = in_block, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   scale_fill_manual(labels = c("Not In Block", "In Block"), values = c("black", "red")) + -->
+<!--   guides(alpha = guide_legend(override.aes = list(fill = "black"))) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - Block Retrofitted", -->
+<!--     subtitle = "Most negative change for low energy use buildings", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_old_mae_no_context %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median, -->
+<!--   ) %>% -->
+<!--   pivot_longer( -->
+<!--     cols =  -c(apn, kwh_actual, baseline_mape), -->
+<!--     names_to = "retrofit", -->
+<!--     names_prefix = "percent_change_", -->
+<!--     values_to = "percent_change" -->
+<!--   ) %>%  -->
+<!--   mutate(in_old = apn %in% old_apn) %>%  -->
+<!--   ggplot(aes(kwh_actual, percent_change, fill = in_old, alpha = desc(baseline_mape))) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(shape = 21, color = 'white', size = 3) + -->
+<!--   scale_alpha_continuous( -->
+<!--     labels = scales::label_percent(scale = -1) -->
+<!--   ) + -->
+<!--   scale_fill_manual(labels = c("Not Old", "Old"), values = c("black", "red")) + -->
+<!--   guides(alpha = guide_legend(override.aes = list(fill = "black"))) + -->
+<!--   facet_wrap(~ str_to_title(retrofit)) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change and Energy Use - Old Buildings Retrofitted", -->
+<!--     subtitle = "Greatest deviation at low energy use", -->
+<!--     x = "Energy Consumption (kWh)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     alpha = "MAPE", -->
+<!--     fill = NULL, -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- ## Urban context analysis, adjacent buildings -->
+
+<!-- ```{r} -->
+<!-- block_distances <-  -->
+<!--   distances %>%  -->
+<!--   filter(apn %in% all_apn, apn_2 %in% block_apn) %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   top_n(1, wt = desc(distance)) %>%  -->
+<!--   select(-apn_2) %>%  -->
+<!--   ungroup() -->
+
+<!-- retrofit_block_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median -->
+<!--   ) %>%  -->
+<!--   left_join(block_distances, by = "apn") %>%  -->
+<!--   left_join(buildings, by = "apn") %>%  -->
+<!--   arrange(desc(kwh_actual)) %>%  -->
+<!--   mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>% -->
+<!--   ggplot(aes(distance, percent_change_full)) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") + -->
+<!--   scale_y_continuous( -->
+<!--     labels = scales::label_percent(scale = 1) -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change vs. Distance from Nearest Building in Block", -->
+<!--     subtitle = "Slight tendency for closer buildings to decrease energy use", -->
+<!--     x = "Distance from Nearest Retrofitted Building (m)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     size = "Energy Consumption (kwh)", -->
+<!--     fill = "Building Type", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- retrofit_block_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median -->
+<!--   ) %>%  -->
+<!--   left_join(block_distances, by = "apn") %>%  -->
+<!--   left_join(buildings, by = "apn") %>%  -->
+<!--   arrange(desc(kwh_actual)) %>%  -->
+<!--   mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>% -->
+<!--   ggplot(aes(distance, percent_change_full)) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") + -->
+<!--   scale_fill_manual( -->
+<!--     breaks = c("Retail", "Office", "Apartment", "Warehouse"), -->
+<!--     values = c("white", "#7CAE00", "white", "white") -->
+<!--   ) + -->
+<!--   scale_y_continuous( -->
+<!--     labels = scales::label_percent(scale = 1) -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change vs. Distance from Nearest Building in Block", -->
+<!--     subtitle = "Trend more clear for office buildings", -->
+<!--     x = "Distance from Nearest Retrofitted Building (m)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     size = "Energy Consumption (kwh)", -->
+<!--     fill = "Building Type", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+
+<!-- old_distances <-  -->
+<!--   distances %>%  -->
+<!--   filter(apn %in% all_apn, apn_2 %in% old_apn) %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   top_n(1, wt = desc(distance)) %>%  -->
+<!--   select(-apn_2) %>%  -->
+<!--   ungroup() -->
+
+<!-- retrofit_old_mae %>%  -->
+<!--   group_by(apn) %>%  -->
+<!--   summarize( -->
+<!--     kwh_actual = kwh_actual %>% median, -->
+<!--     baseline_mape = mape(kwh_baseline, kwh_actual), -->
+<!--     percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median, -->
+<!--     percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median -->
+<!--   ) %>%  -->
+<!--   left_join(old_distances, by = "apn") %>%  -->
+<!--   left_join(buildings, by = "apn") %>%  -->
+<!--   arrange(desc(kwh_actual)) %>%  -->
+<!--   mutate(primary_use = factor(primary_use, levels = c("Retail", "Office", "Apartment", "Warehouse"))) %>% -->
+<!--   ggplot(aes(distance, percent_change_full)) + -->
+<!--   geom_hline(aes(yintercept = 0), color = 'red', size = 1) + -->
+<!--   geom_point(aes(fill = primary_use, size = kwh_actual), shape = 21, color = "black") + -->
+<!--   scale_y_continuous( -->
+<!--     labels = scales::label_percent(scale = 1) -->
+<!--   ) + -->
+<!--   labs( -->
+<!--     title = "Median Hourly % Change vs. Distance from Nearest Retrofitted Old Building", -->
+<!--     subtitle = "Buildings that show positive change are all retrofitted", -->
+<!--     x = "Distance from Nearest Retrofitted Building (m)", -->
+<!--     y = "Median Hourly % Change", -->
+<!--     size = "Energy Consumption (kwh)", -->
+<!--     fill = "Building Type", -->
+<!--     caption = "Source: Sacramento Municipal Utility District" -->
+<!--   ) -->
+<!-- ``` -->

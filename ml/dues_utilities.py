@@ -486,7 +486,20 @@ def calc_savings(model, energy, energy_full, folds, num_rows, target_one_hot, sc
 
     return 100 * (retrofit_energy / baseline_energy - 1)
 
-def stepwise_selection(model, energy, retrofit_df, folds, test_folds, scaler, timesteps, savings_path):
+def calc_savings_by_building(model, energy, energy_full, energy_retrofits, folds, num_rows, target_one_hot, scaler, timesteps, subset, baseline_energy):
+    update_from = energy_full.filter(subset)
+    update_to = energy.copy()
+    update_to.update(update_from)
+    test_fold = make_test_fold_fast(update_to, folds[-1][-1], num_rows, target_one_hot, scaler, timesteps)
+
+    test_ref = energy_retrofits.drop(columns=['kwh_full', 'kwh_light', 'kwh_window'])
+    test_ref['predictions'] = model.predict(test_fold).ravel()
+    
+    test_ref['percent_delta'] = 100 * (test_ref['predictions'] / test_ref['kwh_baseline'] - 1)
+    test_ref = test_ref.filter(items=['apn', 'kwh_actual', 'kwh_baseline', 'predictions', 'percent_delta'])
+    return test_ref.groupby('apn').agg('mean')
+
+def stepwise_selection(model, energy, retrofit_df, folds, test_folds, scaler, timesteps, savings_path, forward=True):
     
     df = energy.query(folds[-1][-1])
     num_rows = df['apn'].value_counts().min() // timesteps * timesteps
@@ -497,34 +510,62 @@ def stepwise_selection(model, energy, retrofit_df, folds, test_folds, scaler, ti
 
     all_columns = np.array(retrofit_df.filter(regex='^kwh_sim', axis=1).columns)
     
-    building_pool = list(all_columns)
     building_set = []
     savings_history = []
+    building_pool = list(all_columns)
+    
+    if forward:
+        total_savings = 0
+        while True:
+            best = 10000
+            for building in building_pool:
+                building_set.append(building)
+                saving = calc_savings(model, energy, retrofit_df, folds, num_rows, target_one_hot, scaler, timesteps, building_set, baseline_energy)
+                saving_diff = saving - total_savings
+                if saving_diff < best:
+                    best = saving_diff
+                    best_building = building
+                building_set.pop()
+#             if best == 0:
+#                 break
+            total_savings += best
+            savings_history.append(best)
+            building_set.append(best_building)
+            building_pool.remove(best_building)
 
-    total_savings = 0
-
-    while True:
-        best = 0
-        for building in building_pool:
-            building_set.append(building)
-            saving = calc_savings(model, energy, retrofit_df, folds, num_rows, target_one_hot, scaler, timesteps, building_set, baseline_energy)
-            saving_diff = saving - total_savings
-            if saving_diff < best:
-                best = saving_diff
-                best_building = building
-            building_set.pop()
-        if best == 0:
-            break
-        total_savings += best
-        savings_history.append(best)
-        building_set.append(best_building)
-        building_pool.remove(best_building)
-
-        if not building_pool:
-            break
-
-    all_savings = pd.DataFrame({'building': building_set, 'savings': savings_history})
-    all_savings.to_csv(savings_path, index=False)
+            if not building_pool:
+                break
+                
+        all_savings = pd.DataFrame({'building': building_set, 'savings': savings_history})
+        all_savings.to_csv(savings_path, index=False)
+    
+    else:
+        building_set = building_pool.copy()
+        building_removed = []
+        total_savings = calc_savings(model, energy, retrofit_df, folds, num_rows, target_one_hot, scaler, timesteps, building_set, baseline_energy)
+        while True:
+            best = 10000
+            print(len(building_pool))
+            for building in building_pool:
+                building_set.remove(building)
+                saving = calc_savings(model, energy, retrofit_df, folds, num_rows, target_one_hot, scaler, timesteps, building_set, baseline_energy)
+                saving_diff = saving - total_savings
+                if saving_diff < best:
+                    best = saving_diff
+                    best_building = building
+                building_set.append(building)
+#             if best == 0:
+#                 break
+            total_savings += best
+            savings_history.append(best)
+            building_set.remove(best_building)
+            building_pool.remove(best_building)
+            building_removed.append(best_building)
+            if len(building_pool) == 0:
+                break
+        
+        all_savings = pd.DataFrame({'building': building_removed, 'savings': savings_history})
+        all_savings.to_csv(savings_path, index=False)
     
 def stepwise_selection_no_context(retrofits_df, retrofit_column, savings_path):
     df = retrofits_df.copy()
@@ -542,7 +583,7 @@ def stepwise_selection_no_context(retrofits_df, retrofit_column, savings_path):
 
     all_savings = pd.DataFrame({'building': 'kwh_sim_' + df['apn'].unique(), 'savings': savings})
     all_savings.sort_values('savings', inplace=True)
-    all_savings.query('savings < 0', inplace=True)
+    #all_savings.query('savings < 0', inplace=True)
     all_savings.to_csv(savings_path, index=False)
     
 def plot_stepwise_history(stepwise_history, elbow, retrofit):
