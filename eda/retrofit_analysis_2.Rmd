@@ -10,7 +10,7 @@ library(lubridate)
 library(readxl)
 library(ggridges)
 
-knitr::opts_chunk$set(dpi = 150, fig.width = 6, fig.height = 4)
+knitr::opts_chunk$set(dpi = 150, fig.width = 4, fig.height = 4)
 ```
 
 ```{r}
@@ -422,6 +422,7 @@ hybrid_and_sim <-
   )
 
 hybrid_and_sim %>% 
+  filter(retrofit %in% c("Hybrid Full", "Hybrid Window", "Hybrid Light")) %>% 
   mutate(retrofit = factor(retrofit, levels = c("Hybrid Full", "Simulated Full", "Hybrid Window", "Simulated Window", "Hybrid Light", "Simulated Light"), labels = c("Hybrid Full", "Sim. Full", "Hybrid Window", "Sim. Window", "Hybrid Light", "Sim. Light"))) %>% 
   ggplot(aes(rank, savings, color = retrofit)) +
   geom_hline(aes(yintercept = 0.8), color = "red", size = 1) +
@@ -612,7 +613,7 @@ retrofit_all_mae_no_context %>%
   )
 ```
 
-```{r}
+```{r fig.height=4, fig.width=4}
 # retrofit_all_mae_no_context %>% 
 #   group_by(apn, month) %>% 
 #   summarize_at(vars(kwh_actual, kwh_baseline), mean) %>% 
@@ -658,7 +659,7 @@ retrofit_all_mae_no_context %>%
     x = "Actual",
     y = "Predicted"
   ) +
-  theme_bw() +
+  theme_bw(base_size = 18) +
   theme(
     legend.position = "none"
   )
@@ -674,9 +675,39 @@ retrofit_all_mae %>%
     x = "Actual",
     y = "Predicted"
   ) +
-  theme_bw() +
+  theme_bw(base_size = 18) +
   theme(
     legend.position = "none"
+  )
+```
+
+```{r fig.height=5, fig.width=4}
+retrofit_all_mae %>% 
+  group_by(apn, month) %>% 
+  summarize_at(vars(kwh_actual, kwh_baseline), var) %>% 
+  rename(with_context = kwh_baseline) %>% 
+  left_join(
+    retrofit_all_mae_no_context %>% 
+      group_by(apn, month) %>% 
+      summarize_at(vars(kwh_actual, kwh_baseline), var)
+  ) %>% 
+ group_by(month) %>% 
+  summarize(
+    ratio = mean(with_context / kwh_baseline)
+  ) %>% 
+  mutate(
+    month = lubridate::month(month, label = TRUE)
+  ) %>% 
+  ggplot(aes(month, ratio)) +
+  geom_point(color = 'red', size = 2) +
+  theme_bw() +
+  theme(
+    axis.title.y = element_text(size = 22),
+    axis.text.y = element_text(size = 16)
+  ) +
+  labs(
+    x = NULL,
+    y = "Variance Ratio"
   )
 ```
 
