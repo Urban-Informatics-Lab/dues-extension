@@ -261,52 +261,52 @@ valid_buildings <-
   distinct(apn) %>% 
   pull(apn)
 
-# savings %>% 
-#   arrange(kwh_full_all) %>% 
-#   filter(apn %in% valid_buildings) %>% 
-#   mutate(
-#     cum_sum = cumsum(kwh_full_all),
-#     cum_percent = cum_sum / min(cum_sum),
-#     building = row_number(),
-#     retrofit = "Full Retrofit"
-#   ) %>% 
-#   rbind(
-#     savings %>% 
-#       arrange(kwh_window_all) %>% 
-#       filter(apn %in% valid_buildings) %>% 
-#       mutate(
-#         cum_sum = cumsum(kwh_window_all),
-#         cum_percent = cum_sum / min(cum_sum),
-#         building = row_number(),
-#         retrofit = "Window Retrofit"
-#       )
-#   ) %>% 
-#   rbind(
-#     savings %>% 
-#       arrange(kwh_light_all) %>% 
-#       filter(apn %in% valid_buildings) %>% 
-#       mutate(
-#         cum_sum = cumsum(kwh_light_all),
-#         cum_percent = cum_sum / min(cum_sum),
-#         building = row_number(),
-#         retrofit = "Light Retrofit"
-#       )
-#   ) %>% 
-#   ggplot(aes(building, cum_percent, color = retrofit)) +
-#   geom_hline(aes(yintercept = 0.8), color = "red", size = 1) +
-#   geom_line() +
-#   geom_point() +
-#   scale_x_continuous(breaks = scales::breaks_width(1)) +
-#   labs(
-#     title = "Cumulative Prop. of Max Energy Savings per \nOptimal Building Retrofitted in Simulation",
-#     subtitle = "Requires 13 buildings to break 80%",
-#     x = "# Buildings Retrofitted",
-#     y = "Cumulative Proportion of Best-Case Energy Savings",
-#     color = NULL
-#   ) +
-#   theme(
-#     legend.position = "bottom"
-#   )
+savings %>%
+  arrange(kwh_full_all) %>%
+  filter(apn %in% valid_buildings) %>%
+  mutate(
+    cum_sum = cumsum(kwh_full_all),
+    cum_percent = cum_sum / min(cum_sum),
+    building = row_number(),
+    retrofit = "Full Retrofit"
+  ) %>%
+  rbind(
+    savings %>%
+      arrange(kwh_window_all) %>%
+      filter(apn %in% valid_buildings) %>%
+      mutate(
+        cum_sum = cumsum(kwh_window_all),
+        cum_percent = cum_sum / min(cum_sum),
+        building = row_number(),
+        retrofit = "Window Retrofit"
+      )
+  ) %>%
+  rbind(
+    savings %>%
+      arrange(kwh_light_all) %>%
+      filter(apn %in% valid_buildings) %>%
+      mutate(
+        cum_sum = cumsum(kwh_light_all),
+        cum_percent = cum_sum / min(cum_sum),
+        building = row_number(),
+        retrofit = "Light Retrofit"
+      )
+  ) %>%
+  ggplot(aes(building, cum_percent, color = retrofit)) +
+  geom_hline(aes(yintercept = 0.8), color = "red", size = 1) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  labs(
+    title = "Cumulative Prop. of Max Energy Savings per \nOptimal Building Retrofitted in Simulation",
+    subtitle = "Requires 13 buildings to break 80%",
+    x = "# Buildings Retrofitted",
+    y = "Cumulative Proportion of Best-Case Energy Savings",
+    color = NULL
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
 # 
 # savings %>% 
 #   filter(apn %in% valid_buildings) %>%
@@ -421,19 +421,98 @@ hybrid_and_sim <-
       )
   )
 
+hybrid_and_nc <- 
+  full %>% 
+  filter(savings < 0) %>% 
+  arrange(savings) %>% 
+  mutate(
+    savings = cumsum(savings) / sum(savings),
+    rank = rank(savings),
+    retrofit = "Hybrid Full"
+  ) %>% 
+  rbind(
+    window %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "Hybrid Window"
+      )
+  ) %>% 
+  rbind(
+    light %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "Hybrid Light"
+      )
+  ) %>% 
+  rbind(
+    full_nc %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "No Context Full"
+      )
+  ) %>%
+  rbind(
+    window_nc %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "No Context Window"
+      )
+  ) %>%
+  rbind(
+    light_nc %>% 
+      filter(savings < 0) %>% 
+      mutate(
+        savings = cumsum(savings) / sum(savings),
+        rank = rank(savings),
+        retrofit = "No Context Light"
+      )
+  )
+```
+
+
+```{r fig.width=7, fig.height=6}
 hybrid_and_sim %>% 
-  filter(retrofit %in% c("Hybrid Full", "Hybrid Window", "Hybrid Light")) %>% 
+  # filter(retrofit %in% c("Hybrid Full", "Hybrid Window", "Hybrid Light")) %>% 
   mutate(retrofit = factor(retrofit, levels = c("Hybrid Full", "Simulated Full", "Hybrid Window", "Simulated Window", "Hybrid Light", "Simulated Light"), labels = c("Hybrid Full", "Sim. Full", "Hybrid Window", "Sim. Window", "Hybrid Light", "Sim. Light"))) %>% 
-  ggplot(aes(rank, savings, color = retrofit)) +
+  ggplot(aes(rank, savings, fill = retrofit)) +
   geom_hline(aes(yintercept = 0.8), color = "red", size = 1) +
   geom_line() +
-  geom_point(size = 2) +
+  geom_point(size = 3, color = "white", shape = 21) +
   scale_x_continuous(breaks = scales::breaks_width(2)) +
   scale_y_continuous(breaks = scales::breaks_width(0.2)) +
+  scale_fill_manual(values = c("#149136", "#000000", "#51b86c", "#4f4f4f", "#8ad19d", "#9c9c9c")) +
   labs(
     x = "# Buildings Retrofitted",
     y = "Cumulative Proportion",
-    color = NULL
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom"
+  )
+
+hybrid_and_nc %>% 
+  # filter(retrofit %in% c("Hybrid Full", "Hybrid Window", "Hybrid Light")) %>% 
+  mutate(retrofit = factor(retrofit, levels = c("Hybrid Full", "No Context Full", "Hybrid Window", "No Context Window", "Hybrid Light", "No Context Light"), labels = c("W/ Context Full", "No Context Full", "W/ Context Window", "No Context Window", "W/ Context Light", "No Context Light"))) %>% 
+  ggplot(aes(rank, savings, fill = retrofit)) +
+  geom_hline(aes(yintercept = 0.8), color = "red", size = 1) +
+  geom_line() +
+  geom_point(size = 3, color = "white", shape = 21) +
+  scale_x_continuous(breaks = scales::breaks_width(2)) +
+  scale_y_continuous(breaks = scales::breaks_width(0.2)) +
+  scale_fill_manual(values = c("#149136", "#000000", "#51b86c", "#4f4f4f", "#8ad19d", "#9c9c9c")) +
+  labs(
+    x = "# Buildings Retrofitted",
+    y = "Cumulative Proportion",
+    fill = NULL
   ) +
   theme_bw() +
   theme(
@@ -916,7 +995,7 @@ full_building %>%
     rank = rank(savings),
     ground_floor = cumsum(ground_floor),
     context = "W/ Context"
-  ) %>%
+  )
   rbind(
     full_nc_building %>%
       filter(savings < 0) %>%
@@ -927,7 +1006,7 @@ full_building %>%
         ground_floor = cumsum(ground_floor),
         context = "No Context"
       )
-  ) %>%
+  )
   ggplot(aes(rank, ground_floor, color = context)) +
   geom_line() +
   geom_point() +
@@ -969,7 +1048,9 @@ savings %>%
   pull(ground_floor) %>% 
   mean()
 
-# 642951
+#120701
+#52904
+#427628
 ```
 # 
 # kwh_co2 %>% 

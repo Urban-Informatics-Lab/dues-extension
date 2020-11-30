@@ -975,11 +975,11 @@ retrofit_all_mae %>%
 retrofit_block_mae %>%
   group_by(apn) %>%
   summarize(
-    kwh_actual = kwh_actual %>% median,
+    kwh_actual = kwh_actual %>% mean,
     baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
+    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% mean,
+    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% mean,
+    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% mean,
   ) %>%
   pivot_longer(
     cols =  -c(apn, kwh_actual, baseline_mape),
@@ -997,7 +997,40 @@ retrofit_block_mae %>%
   labs(
     title = "Retrofit Type",
     x = "Typical Hourly Energy Consumption (kWh)",
-    y = "Median Hourly Change (%)",
+    y = "Mean Hourly Change (%)",
+    fill = NULL
+  ) +
+  theme_bw()
+
+retrofit_block_mae %>%
+  mutate(
+    season =
+      case_when(
+        month >= 1 & month <= 3 ~ "Jan - Mar",
+        month >= 4 & month <= 6 ~ "Apr - Jun",
+        month >= 7 & month <= 9 ~ "Jul - Sep",
+        month >= 10 & month <= 12 ~ "Oct - Dec",
+      )
+  ) %>% 
+  group_by(apn, season) %>%
+  summarize(
+    kwh_actual = kwh_actual %>% mean,
+    baseline_mape = mape(kwh_baseline, kwh_actual),
+    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% mean,
+    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% mean,
+    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% mean,
+  ) %>% 
+  mutate(in_block = apn %in% block_apn) %>% 
+  ggplot(aes(kwh_actual, percent_change_full, fill = in_block)) +
+  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
+  geom_point(shape = 21, color = 'white', size = 3, alpha = 0.7) +
+  scale_fill_manual(breaks = c(TRUE, FALSE), labels = c("Building in retrofitted block", "Building not in retrofitted block"), values = c("black", "red")) +
+  guides(fill = FALSE) +
+  facet_wrap(~ season) +
+  labs(
+    title = "Mean Seasonal Effects of Full Retrofit - No Context",
+    x = "Typical Hourly Energy Consumption (kWh)",
+    y = "Mean Hourly Change (%)",
     fill = NULL
   ) +
   theme_bw()
@@ -1073,11 +1106,11 @@ retrofit_all_mae_no_context %>%
 retrofit_block_mae_no_context %>%
   group_by(apn) %>%
   summarize(
-    kwh_actual = kwh_actual %>% median,
+    kwh_actual = kwh_actual %>% mean,
     baseline_mape = mape(kwh_baseline, kwh_actual),
-    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% median,
-    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% median,
-    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% median,
+    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% mean,
+    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% mean,
+    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% mean,
   ) %>%
   pivot_longer(
     cols =  -c(apn, kwh_actual, baseline_mape),
@@ -1098,7 +1131,40 @@ retrofit_block_mae_no_context %>%
   labs(
     title = "Retrofit Type",
     x = "Typical Hourly Energy Consumption (kWh)",
-    y = "Median Hourly Change (%)",
+    y = "Mean Hourly Change (%)",
+    fill = NULL
+  ) +
+  theme_bw()
+
+retrofit_block_mae_no_context %>%
+  mutate(
+    season =
+      case_when(
+        month >= 1 & month <= 3 ~ "Jan - Mar",
+        month >= 4 & month <= 6 ~ "Apr - Jun",
+        month >= 7 & month <= 9 ~ "Jul - Sep",
+        month >= 10 & month <= 12 ~ "Oct - Dec",
+      )
+  ) %>% 
+  group_by(apn, season) %>%
+  summarize(
+    kwh_actual = kwh_actual %>% mean,
+    baseline_mape = mape(kwh_baseline, kwh_actual),
+    percent_change_full = 100 * (kwh_full / kwh_baseline - 1) %>% mean,
+    percent_change_light = 100 * (kwh_light / kwh_baseline - 1) %>% mean,
+    percent_change_window = 100 * (kwh_window / kwh_baseline - 1) %>% mean,
+  ) %>% 
+  mutate(in_block = apn %in% block_apn) %>% 
+  ggplot(aes(kwh_actual, percent_change_full, fill = in_block)) +
+  geom_hline(aes(yintercept = 0), color = 'red', size = 1) +
+  geom_point(shape = 21, color = 'white', size = 3, alpha = 0.7) +
+  scale_fill_manual(breaks = c(TRUE, FALSE), labels = c("Building in retrofitted block", "Building not in retrofitted block"), values = c("black", "red")) +
+  guides(fill = FALSE) +
+  facet_wrap(~ season) +
+  labs(
+    title = "Mean Seasonal Effects of Full Retrofit - No Context",
+    x = "Typical Hourly Energy Consumption (kWh)",
+    y = "Mean Hourly Change (%)",
     fill = NULL
   ) +
   theme_bw()
